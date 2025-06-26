@@ -1,0 +1,31 @@
+# Ignorer les environnements virtuels Python
+env/
+venv/
+.env/
+
+# Ignorer dossiers d’environnements virtuels dans backend et frontend
+backend/env/
+backend/venv/
+frontend/env/
+frontend/venv/
+
+# Ignorer dossiers node_modules (frontend JS/Node)
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Ignorer dossier Anniv/ (pour ne pas envoyer les gros fichiers/dossiers)
+Anniv/
+
+# Ignorer fichiers Python compilés
+__pycache__/
+*.py[cod]
+
+# Ignorer fichiers système
+.DS_Store
+Thumbs.db
+
+# Ignorer logs
+*.log
+
+# Ignorer fichiers de configuration locaux
