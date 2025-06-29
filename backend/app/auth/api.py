@@ -99,12 +99,25 @@ async def register(user: schemas.UserRegister, db: AsyncSession = Depends(get_db
             "phone": new_user.phone,
             "first_name": user.first_name,
             "last_name": user.last_name,
+            "username": None,
+            "birthDate": None,
             "avatar_url": avatar_url,
+            "coverPhoto": None,
+            "bio": "",
+            "location": "",
+            "website": None,
+            "online_status": False,
+            "last_seen": None,
             "level": 1,
             "points": 0,
-            "online_status": False,
             "registered_at": datetime.utcnow(),
+            "interests": [],
+            "friends_count": 0,
+            "friend_ids": [],
+            "blocked_users": [],
+            "notifications": []
         }
+
         profiles_collection.insert_one(profile_doc)
 
         return {"msg": "Utilisateur enregistré avec succès", "user_id": new_user.id}
