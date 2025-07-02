@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -16,6 +17,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialIcons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { logout } from '../../../services/auth';
+import { getProfile } from '../../../services/profile';
 
 const SettingsScreen = () => {
   // États pour les switches
@@ -26,65 +28,203 @@ const SettingsScreen = () => {
   const [darkModeEnabled, setDarkModeEnabled] = useState(false);
   const [locationEnabled, setLocationEnabled] = useState(true);
   const [autoBackup, setAutoBackup] = useState(true);
-
-  const user = {
-    name: 'Alex',
-    email: 'alex@celebconnect.com',
-    plan: 'Premium',
+  const [user, setUser] = useState({
+    name: 'Chargement...',
+    email: '',
+    phone: '',
+    plan: 'Gratuit',
     version: '2.1.0'
+  });
+
+  // Fonction pour récupérer l'identifiant utilisateur depuis AsyncStorage
+  const getUserIdentifier = async () => {
+    try {
+      // Sources possibles d'identifiants dans AsyncStorage
+      const sources = [
+        'userEmail',        // Ancienne version (rétrocompatibilité)
+        'userPhone',        // Si vous stockez le téléphone séparément
+        'userIdentifier',   // Nouvelle version unifiée
+        'userInfo',         // Objet contenant les infos utilisateur
+        'loginCredentials'  // Objet de connexion
+      ];
+
+      for (const source of sources) {
+        const data = await AsyncStorage.getItem(source);
+        if (data) {
+          let identifier = null;
+
+          // Traitement selon le type de source
+          if (source === 'userEmail' || source === 'userPhone' || source === 'userIdentifier') {
+            // Valeur simple (string)
+            identifier = data;
+          } else {
+            // Objet JSON à parser
+            try {
+              const parsedData = JSON.parse(data);
+              identifier = parsedData.email || parsedData.phone || parsedData.identifier;
+            } catch (parseError) {
+              console.warn(`Erreur parsing ${source}:`, parseError);
+              continue;
+            }
+          }
+
+          // Valider et formater l'identifiant trouvé
+          if (identifier) {
+            const formattedIdentifier = formatIdentifier(identifier);
+            if (formattedIdentifier) {
+              console.log(`Identifiant valide trouvé dans ${source}:`, formattedIdentifier);
+              return formattedIdentifier;
+            }
+          }
+        }
+      }
+
+      throw new Error("Aucun identifiant valide trouvé (email ou téléphone)");
+
+    } catch (error) {
+      console.error("Erreur getUserIdentifier:", error);
+      return null;
+    }
   };
+
+  // Fonction pour formater et valider un identifiant
+  const formatIdentifier = (identifier) => {
+    if (!identifier) return null;
+    
+    // Nettoyer l'identifiant
+    const cleanIdentifier = identifier.toString().trim();
+    
+    // Vérifier si c'est un email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (emailRegex.test(cleanIdentifier)) {
+      return {
+        type: 'email',
+        value: cleanIdentifier.toLowerCase()
+      };
+    }
+    
+    // Vérifier si c'est un numéro de téléphone
+    const phoneRegex = /^[\+]?[0-9\s\-\(\)]+$/;
+    const cleanPhone = cleanIdentifier.replace(/[\s\-\(\)]/g, '');
+    if (phoneRegex.test(cleanIdentifier) && cleanPhone.length >= 8) {
+      return {
+        type: 'phone',
+        value: cleanPhone
+      };
+    }
+    
+    return null;
+  };
+
+  // Fonction pour obtenir un nom par défaut basé sur l'identifiant
+  const getDefaultName = (identifierObj) => {
+    if (identifierObj?.type === 'email') {
+      return identifierObj.value.split('@')[0];
+    } else if (identifierObj?.type === 'phone') {
+      return `Utilisateur ${identifierObj.value.slice(-4)}`;
+    }
+    return 'Utilisateur';
+  };
+
+  // Fonction pour charger le profil utilisateur (emails ET téléphones)
+  const loadUserProfile = async () => {
+    try {
+      // 1. Récupérer l'identifiant utilisateur depuis AsyncStorage
+      const identifierObj = await getUserIdentifier();
+      
+      if (identifierObj) {
+        console.log('Identifiant trouvé:', identifierObj);
+        
+        // 2. Appeler l'API avec l'identifiant
+        const profile = await getProfile(identifierObj.value);
+        
+        if (profile) {
+          // 3. Mettre à jour l'état utilisateur
+          setUser({
+            name: profile.first_name || getDefaultName(identifierObj),
+            email: profile.email || (identifierObj.type === 'email' ? identifierObj.value : ''),
+            phone: profile.phone || (identifierObj.type === 'phone' ? identifierObj.value : ''),
+            plan: profile.premium ? 'Premium' : 'Gratuit',
+            version: '2.1.0'
+          });
+        }
+      } else {
+        console.warn('Aucun identifiant utilisateur trouvé');
+        // Profil par défaut si aucun identifiant
+        setUser({
+          name: 'Utilisateur',
+          email: '',
+          phone: '',
+          plan: 'Gratuit',
+          version: '2.1.0'
+        });
+      }
+    } catch (error) {
+      console.error('Erreur lors du chargement du profil:', error);
+      // Gérer l'erreur avec un profil par défaut
+      setUser({
+        name: 'Utilisateur',
+        email: '',
+        phone: '',
+        plan: 'Gratuit',
+        version: '2.1.0'
+      });
+    }
+  };
+
+  useEffect(() => {
+    loadUserProfile();
+  }, []);
+
 
   const handleBack = () => {
     router.back();
   };
 
-const handleLogout = async () => {
-  Alert.alert(
-    'Déconnexion',
-    'Êtes-vous sûr de vouloir vous déconnecter ?',
-    [
-      { text: 'Annuler', style: 'cancel' },
-      {
-        text: 'Déconnexion',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            // Récupérer le token stocké
-            const token = await AsyncStorage.getItem('userToken');
-            
-            if (token) {
-              try {
-                // Appeler l'API de déconnexion
-                await logout(token);
-              } catch (apiError) {
-                console.warn('Erreur API:', apiError.message);
-                // Continue même si l'API échoue
+  const handleLogout = async () => {
+    Alert.alert(
+      'Déconnexion',
+      'Êtes-vous sûr de vouloir vous déconnecter ?',
+      [
+        { text: 'Annuler', style: 'cancel' },
+        {
+          text: 'Déconnexion',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Récupérer le token stocké
+              const token = await AsyncStorage.getItem('userToken');
+              
+              if (token) {
+                try {
+                  // Appeler l'API de déconnexion
+                  await logout(token);
+                } catch (apiError) {
+                  console.warn('Erreur API:', apiError.message);
+                  // Continue même si l'API échoue
+                }
               }
+
+              // Vider complètement AsyncStorage
+              await AsyncStorage.clear();
+
+              // Rediriger vers l'écran de connexion
+              router.replace('/screens/auth/login');
+
+            } catch (error) {
+              console.error('Erreur lors de la déconnexion:', error);
+              Alert.alert(
+                'Erreur', 
+                'Impossible de se déconnecter. Veuillez réessayer.'
+              );
             }
-
-            // Nettoyer le stockage local
-            await AsyncStorage.multiRemove([
-              'userToken',
-              'userInfo',
-              'refreshToken', 
-              'loginMethod'
-            ]);
-
-            // Rediriger vers l'écran de connexion
-            router.replace('/screens/auth/login');
-
-          } catch (error) {
-            console.error('Erreur lors de la déconnexion:', error);
-            Alert.alert(
-              'Erreur', 
-              'Impossible de se déconnecter. Veuillez réessayer.'
-            );
           }
         }
-      }
-    ]
-  );
-};
+      ]
+    );
+  };
+
+
 
   const handleDeleteAccount = () => {
     Alert.alert(
@@ -143,7 +283,7 @@ const handleLogout = async () => {
     </View>
   );
 
-  const renderUserSection = () => (
+    const renderUserSection = () => (
     <View style={styles.userSection}>
       <LinearGradient
         colors={['#667eea', '#764ba2']}
@@ -173,6 +313,7 @@ const handleLogout = async () => {
       </LinearGradient>
     </View>
   );
+
 
   const renderSettingsSection = (title, items) => (
     <View style={styles.settingsSection}>
@@ -439,7 +580,7 @@ const handleLogout = async () => {
     </View>
   );
 
-  return (
+   return (
     <SafeAreaView style={styles.container}>
       {renderHeader()}
       

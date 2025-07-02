@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TouchableOpacity,
   SafeAreaView,
   ScrollView,
@@ -12,46 +11,197 @@ import {
   Dimensions,
   PermissionsAndroid,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
+import EditeprofileStyles from '../../../styles/editprofile';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { LinearGradient } from 'expo-linear-gradient';
 import Geolocation from 'react-native-geolocation-service';
 import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { profileService } from '../../../services/profile';
+
 
 const { width } = Dimensions.get('window');
 
-const EditProfileScreen = () => {
+// Avatars par défaut
+const DEFAULT_AVATAR = 'https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=150';
+const DEFAULT_COVER = 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=200&fit=crop';
+
+const BASE_URL = 'http://192.168.11.120:8000'; // base URL pour concat si besoin
+
+const EditProfileScreen = ({ route }) => {
+  // États principaux
   const [profile, setProfile] = useState({
-    name: 'Alex Dubois',
-    username: '@alexdubois',
-    email: 'alex.dubois@example.com',
-    phone: '+33 6 12 34 56 78',
-    birthDate: '1990-05-15',
-    bio: 'Passionné d\'aventures et de moments partagés 🌟 Organisateur d\'événements inoubliables',
-    location: '', // Laissé vide initialement
-    website: 'alexdubois.com',
+    name: '',
+    username: '',
+    email: '',
+    phone: '',
+    birthDate: '',
+    bio: '',
+    location: '',
+    website: '',
   });
 
-  const [avatar, setAvatar] = useState('https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&h=150&fit=crop&crop=face');
-  const [coverPhoto, setCoverPhoto] = useState('https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=200&fit=crop');
-  const [interests, setInterests] = useState(['Voyage', 'Photographie', 'Cuisine', 'Musique', 'Sport', 'Art']);
+  const [avatar, setAvatar] = useState(DEFAULT_AVATAR);
+  const [coverPhoto, setCoverPhoto] = useState(DEFAULT_COVER);
+  const [interests, setInterests] = useState([]);
   const [newInterest, setNewInterest] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // États de chargement
   const [isLoadingLocation, setIsLoadingLocation] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
+  const [isUploadingCover, setIsUploadingCover] = useState(false);
 
   useEffect(() => {
-    // Récupérer la localisation au chargement du composant
-    getCurrentLocation();
-    // Demander les permissions pour la galerie
-    (async () => {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission requise', 'Nous avons besoin de la permission pour accéder à vos photos.');
-      }
-    })();
+    initializeProfile();
   }, []);
+
+  const initializeProfile = async () => {
+    try {
+      await setupPermissions();
+      await loadUserProfile();
+    } catch (error) {
+      console.error('Erreur initialisation:', error);
+      Alert.alert(
+        'Erreur',
+        'Impossible de charger le profil. Vérifiez votre connexion.',
+        [
+          { text: 'Réessayer', onPress: initializeProfile },
+          { text: 'Retour', onPress: () => router.back() }
+        ]
+      );
+    }
+  };
+
+  const getUserIdentifier = async () => {
+    try {
+      const identifier = await AsyncStorage.getItem('userIdentifier');
+      if (identifier) {
+        return identifier;
+      } else {
+        throw new Error('Identifiant utilisateur introuvable. Veuillez vous reconnecter.');
+      }
+    } catch (error) {
+      console.error('Erreur récupération identifiant:', error);
+      throw error;
+    }
+  };
+
+  const loadUserProfile = async () => {
+    try {
+      setIsLoading(true);
+
+      const identifier = await getUserIdentifier();
+      const cachedProfile = await loadFromCache();
+
+      if (cachedProfile) {
+        populateProfileData(cachedProfile);
+      }
+
+      try {
+        const profileData = await profileService.getProfile(identifier);
+        if (profileData) {
+          await saveToCache(profileData);
+          populateProfileData(profileData);
+        }
+      } catch (apiError) {
+        console.error('Erreur API profileService.getProfile:', apiError);
+
+        if (!cachedProfile) {
+          if (apiError.status === 404) {
+            if (identifier.includes('@')) {
+              setProfile(prev => ({ ...prev, email: identifier }));
+            } else {
+              setProfile(prev => ({ ...prev, phone: identifier }));
+            }
+          } else {
+            throw apiError;
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Erreur chargement profil:', error);
+      throw error;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const loadFromCache = async () => {
+    try {
+      const cachedData = await AsyncStorage.getItem('userProfile');
+      return cachedData ? JSON.parse(cachedData) : null;
+    } catch (error) {
+      console.error('Erreur cache:', error);
+      return null;
+    }
+  };
+
+  const saveToCache = async (profileData) => {
+    try {
+      await AsyncStorage.setItem('userProfile', JSON.stringify(profileData));
+    } catch (error) {
+      console.error('Erreur sauvegarde cache:', error);
+    }
+  };
+
+  const populateProfileData = (profileData) => {
+    if (!profileData) return;
+
+    const fullName = profileData.first_name && profileData.last_name
+      ? `${profileData.first_name} ${profileData.last_name}`.trim()
+      : profileData.name || '';
+
+    setProfile({
+      name: fullName,
+      username: profileData.username || '',
+      email: profileData.email || '',
+      phone: profileData.phone || '',
+      birthDate: profileData.birth_date || '',
+      bio: profileData.bio || '',
+      location: profileData.location || '',
+      website: profileData.website || '',
+    });
+
+    if (Array.isArray(profileData.interests)) {
+      setInterests(profileData.interests);
+    }
+
+    if (profileData.avatar_url && !profileData.avatar_url.includes('ui-avatars.com')) {
+      // Ajout cache busting
+      const avatarUrl = profileData.avatar_url.startsWith('http')
+        ? profileData.avatar_url
+        : `${BASE_URL}${profileData.avatar_url}`;
+      setAvatar(`${avatarUrl}?t=${Date.now()}`);
+    } else {
+      const userName = fullName || profileData.username || 'User';
+      setAvatar(`https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=667eea&color=fff&size=150`);
+    }
+
+    if (profileData.cover_photo_url) {
+      const coverUrl = profileData.cover_photo_url.startsWith('http')
+        ? profileData.cover_photo_url
+        : `${BASE_URL}${profileData.cover_photo_url}`;
+      setCoverPhoto(`${coverUrl}?t=${Date.now()}`);
+    } else {
+      setCoverPhoto(DEFAULT_COVER);
+    }
+  };
+
+  const setupPermissions = async () => {
+    try {
+      await ImagePicker.requestMediaLibraryPermissionsAsync();
+      await ImagePicker.requestCameraPermissionsAsync();
+    } catch (error) {
+      console.error('Erreur permissions:', error);
+    }
+  };
 
   const requestLocationPermission = async () => {
     try {
@@ -59,83 +209,276 @@ const EditProfileScreen = () => {
         const granted = await PermissionsAndroid.request(
           PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
           {
-            title: "Autorisation de localisation",
+            title: "Permission de localisation",
             message: "Cette application a besoin d'accéder à votre position.",
-            buttonNeutral: "Demander plus tard",
+            buttonNeutral: "Plus tard",
             buttonNegative: "Annuler",
             buttonPositive: "OK"
           }
         );
-        if (granted === PermissionsAndroid.RESULTS.GRANTED) {
-          return true;
-        } else {
-          Alert.alert("Permission refusée", "Vous avez refusé l'accès à votre position.");
-          return false;
-        }
+        return granted === PermissionsAndroid.RESULTS.GRANTED;
       }
       return true;
-    } catch (err) {
-      console.warn(err);
+    } catch (error) {
+      console.warn('Erreur permission localisation:', error);
       return false;
     }
   };
 
   const getCurrentLocation = async () => {
     setIsLoadingLocation(true);
-    const hasPermission = await requestLocationPermission();
-    
-    if (hasPermission) {
-      Geolocation.getCurrentPosition(
-        (position) => {
-          const { latitude, longitude } = position.coords;
-          setProfile(prev => ({
-            ...prev,
-            location: `Position: ${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
-          }));
-          setIsLoadingLocation(false);
-        },
-        (error) => {
-          Alert.alert("Erreur", "Impossible de récupérer votre position.");
-          console.log(error.code, error.message);
-          setIsLoadingLocation(false);
-        },
-        { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
-      );
-    } else {
+
+    try {
+      const hasPermission = await requestLocationPermission();
+
+      if (hasPermission) {
+        Geolocation.getCurrentPosition(
+          (position) => {
+            const { latitude, longitude } = position.coords;
+            setProfile(prev => ({
+              ...prev,
+              location: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`
+            }));
+            setIsLoadingLocation(false);
+          },
+          (error) => {
+            console.error('Erreur géolocalisation:', error);
+            Alert.alert("Erreur", "Impossible de récupérer votre position.");
+            setIsLoadingLocation(false);
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 15000,
+            maximumAge: 10000
+          }
+        );
+      } else {
+        setIsLoadingLocation(false);
+      }
+    } catch (error) {
+      console.error('Erreur getCurrentLocation:', error);
       setIsLoadingLocation(false);
     }
   };
 
   const pickImage = async (type) => {
     try {
-      let result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        aspect: type === 'avatar' ? [1, 1] : [4, 2],
-        quality: 1,
-      });
-
-      if (!result.canceled) {
-        if (type === 'avatar') {
-          setAvatar(result.assets[0].uri);
-        } else {
-          setCoverPhoto(result.assets[0].uri);
-        }
-      }
+      Alert.alert(
+        'Sélectionner une photo',
+        'Choisissez la source de votre photo',
+        [
+          { text: 'Galerie', onPress: () => openImagePicker(type, 'gallery') },
+          { text: 'Caméra', onPress: () => openImagePicker(type, 'camera') },
+          { text: 'Annuler', style: 'cancel' }
+        ]
+      );
     } catch (error) {
-      Alert.alert("Erreur", "Une erreur s'est produite lors de la sélection de l'image.");
-      console.error(error);
+      console.error('Erreur pickImage:', error);
+      Alert.alert("Erreur", "Impossible de sélectionner l'image.");
     }
   };
 
-  const handleSave = () => {
-    Alert.alert('Profil mis à jour', 'Vos modifications ont été enregistrées avec succès !');
-    router.back();
+  const openImagePicker = async (type, source) => {
+    try {
+      let result;
+
+      const options = {
+        allowsEditing: true,
+        aspect: type === 'avatar' ? [1, 1] : [4, 2],
+        quality: 0.8,
+      };
+
+      if (source === 'camera') {
+        result = await ImagePicker.launchCameraAsync(options);
+      } else {
+        result = await ImagePicker.launchImageLibraryAsync({
+          ...options,
+          mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        });
+      }
+
+      if (!result.canceled && result.assets?.length > 0) {
+        const imageUri = result.assets[0].uri;
+        await processSelectedImage(imageUri, type);
+      }
+    } catch (error) {
+      console.error("Erreur sélection image:", error);
+      Alert.alert("Erreur", "Impossible de traiter l'image sélectionnée.");
+    }
+  };
+
+  const processSelectedImage = async (imageUri, type) => {
+    try {
+      if (type === 'avatar') {
+        setIsUploadingAvatar(true);
+        setAvatar(imageUri);
+      } else {
+        setIsUploadingCover(true);
+        setCoverPhoto(imageUri);
+      }
+
+      const uploadedData = await uploadImage(imageUri, type);
+      console.log('Upload result:', uploadedData); // DEBUG important
+
+      if (uploadedData) {
+        if (type === 'avatar') {
+          const avatarUrl = uploadedData.avatar_url || uploadedData.url;
+          const fullAvatarUrl = avatarUrl.startsWith('http') ? avatarUrl : `${BASE_URL}${avatarUrl}`;
+          setAvatar(`${fullAvatarUrl}?t=${Date.now()}`); // cache busting
+        } else {
+          const coverUrl = uploadedData.cover_photo_url || uploadedData.url;
+          const fullCoverUrl = coverUrl.startsWith('http') ? coverUrl : `${BASE_URL}${coverUrl}`;
+          setCoverPhoto(`${fullCoverUrl}?t=${Date.now()}`);
+        }
+
+        Alert.alert('Succès', 'Image mise à jour avec succès !');
+
+        if (uploadedData.profile) {
+          await saveToCache(uploadedData.profile);
+        }
+      }
+    } catch (error) {
+      console.error(`Erreur traitement ${type}:`, error);
+      Alert.alert('Erreur', `Impossible de mettre à jour l'image: ${error.message}`);
+
+      const cachedProfile = await loadFromCache();
+      if (cachedProfile) {
+        if (type === 'avatar') {
+          const avatarUrl = cachedProfile.avatar_url || DEFAULT_AVATAR;
+          setAvatar(avatarUrl.includes('http') ? avatarUrl : `${BASE_URL}${avatarUrl}`);
+        } else {
+          const coverUrl = cachedProfile.cover_photo_url || DEFAULT_COVER;
+          setCoverPhoto(coverUrl.includes('http') ? coverUrl : `${BASE_URL}${coverUrl}`);
+        }
+      }
+    } finally {
+      if (type === 'avatar') {
+        setIsUploadingAvatar(false);
+      } else {
+        setIsUploadingCover(false);
+      }
+    }
+  };
+
+  const uploadImage = async (uri, type) => {
+    try {
+      if (!uri) throw new Error('URI invalide');
+
+      const identifier = await getUserIdentifier();
+      const fileExtension = uri.split('.').pop()?.toLowerCase() || 'jpg';
+      const mimeType = fileExtension === 'png' ? 'image/png' : 'image/jpeg';
+
+      const file = {
+        uri: uri,
+        name: `${type}_${Date.now()}.${fileExtension}`,
+        type: mimeType,
+      };
+
+      if (type === 'avatar') {
+        return await profileService.uploadAvatar(identifier, file);
+      } else {
+        return await profileService.uploadCoverPhoto(identifier, file);
+      }
+    } catch (error) {
+      console.error("Erreur upload:", error);
+
+      if (error.message.includes('Network request failed')) {
+        throw new Error('Problème de connexion réseau.');
+      } else if (error.message.includes('timeout')) {
+        throw new Error('Upload trop long. Réessayez avec une image plus petite.');
+      } else {
+        throw new Error(`Erreur upload: ${error.message}`);
+      }
+    }
+  };
+
+  const handleSave = async () => {
+    try {
+      setIsSaving(true);
+
+      if (!profile.name.trim()) {
+        Alert.alert('Erreur', 'Le nom est obligatoire.');
+        return;
+      }
+
+      const identifier = await getUserIdentifier();
+
+      if (identifier.includes('@')) {
+        if (!profile.email.trim()) {
+          Alert.alert('Erreur', "L'email est obligatoire.");
+          return;
+        }
+
+        if (profile.email.trim().toLowerCase() !== identifier.toLowerCase()) {
+          setProfile(prev => ({ ...prev, email: identifier }));
+        }
+      } else {
+        if (!profile.phone.trim()) {
+          setProfile(prev => ({ ...prev, phone: identifier }));
+        }
+      }
+
+      const nameParts = profile.name.trim().split(' ');
+      const updateData = {
+        first_name: nameParts[0] || '',
+        last_name: nameParts.slice(1).join(' ') || '',
+        email: profile.email.trim() || (identifier.includes('@') ? identifier : ''),
+        phone: profile.phone.trim() || (!identifier.includes('@') ? identifier : ''),
+        username: profile.username.trim(),
+        birth_date: profile.birthDate,
+        bio: profile.bio.trim(),
+        location: profile.location.trim(),
+        website: profile.website.trim(),
+        interests: interests,
+      };
+
+      Object.keys(updateData).forEach(key => {
+        if (!updateData[key] || updateData[key] === '') {
+          if (!['email', 'phone'].includes(key)) {
+            delete updateData[key];
+          }
+        }
+      });
+
+      const updatedProfile = await profileService.updateProfile(identifier, updateData);
+      await saveToCache(updatedProfile);
+      await updateUserInfo(updatedProfile);
+
+      Alert.alert(
+        'Succès',
+        'Profil mis à jour avec succès !',
+        [{ text: 'OK', onPress: () => router.back() }]
+      );
+    } catch (error) {
+      console.error('Erreur sauvegarde:', error);
+      Alert.alert('Erreur', error.message || 'Échec de la mise à jour du profil');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const updateUserInfo = async (updatedProfile) => {
+    try {
+      const userInfoString = await AsyncStorage.getItem('userInfo');
+      if (userInfoString) {
+        const userInfo = JSON.parse(userInfoString);
+        const updatedUserInfo = {
+          ...userInfo,
+          name: `${updatedProfile.first_name} ${updatedProfile.last_name}`.trim(),
+          username: updatedProfile.username,
+          avatar_url: updatedProfile.avatar_url,
+        };
+        await AsyncStorage.setItem('userInfo', JSON.stringify(updatedUserInfo));
+      }
+    } catch (error) {
+      console.error('Erreur mise à jour userInfo:', error);
+    }
   };
 
   const addInterest = () => {
-    if (newInterest.trim() && !interests.includes(newInterest.trim())) {
-      setInterests([...interests, newInterest.trim()]);
+    const trimmedInterest = newInterest.trim();
+    if (trimmedInterest && !interests.includes(trimmedInterest)) {
+      setInterests([...interests, trimmedInterest]);
       setNewInterest('');
     }
   };
@@ -147,30 +490,50 @@ const EditProfileScreen = () => {
   const handleDateChange = (event, selectedDate) => {
     setShowDatePicker(false);
     if (selectedDate) {
-      setProfile({...profile, birthDate: selectedDate.toISOString().split('T')[0]});
+      setProfile({
+        ...profile,
+        birthDate: selectedDate.toISOString().split('T')[0]
+      });
     }
   };
 
+  if (isLoading) {
+    return (
+      <SafeAreaView style={EditeprofileStyles.container}>
+        <View style={EditeprofileStyles.loadingContainer}>
+          <ActivityIndicator size="large" color="#667eea" />
+          <Text style={EditeprofileStyles.loadingText}>Chargement du profil...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
   return (
-    <SafeAreaView style={styles.container}>
-      <ScrollView contentContainerStyle={styles.scrollContainer}>
+    <SafeAreaView style={EditeprofileStyles.container}>
+      <ScrollView contentContainerStyle={EditeprofileStyles.scrollContainer}>
         {/* Header avec photo de couverture */}
-        <View style={styles.coverContainer}>
-          <Image source={{ uri: coverPhoto }} style={styles.coverPhoto} />
+        <View style={EditeprofileStyles.coverContainer}>
+          <Image source={{ uri: coverPhoto }} style={EditeprofileStyles.coverPhoto} />
           <LinearGradient
             colors={['transparent', 'rgba(0,0,0,0.6)']}
-            style={styles.coverGradient}
+            style={EditeprofileStyles.coverGradient}
           />
           <TouchableOpacity 
-            style={styles.changeCoverButton}
+            style={EditeprofileStyles.changeCoverButton}
             onPress={() => pickImage('cover')}
+            disabled={isUploadingCover}
           >
-            <Ionicons name="camera" size={20} color="white" />
-            <Text style={styles.changeCoverText}>Changer la photo</Text>
+            {isUploadingCover ? (
+              <ActivityIndicator size="small" color="white" />
+            ) : (
+              <Ionicons name="camera" size={20} color="white" />
+            )}
+            <Text style={EditeprofileStyles.changeCoverText}>
+              {isUploadingCover ? 'Upload...' : 'Changer'}
+            </Text>
           </TouchableOpacity>
           
           <TouchableOpacity 
-            style={styles.backButton}
+            style={EditeprofileStyles.backButton}
             onPress={() => router.back()}
           >
             <Ionicons name="chevron-back" size={28} color="white" />
@@ -178,64 +541,67 @@ const EditProfileScreen = () => {
         </View>
 
         {/* Section Avatar */}
-        <View style={styles.avatarSection}>
-          <View style={styles.avatarContainer}>
-            <Image source={{ uri: avatar }} style={styles.avatar} />
+        <View style={EditeprofileStyles.avatarSection}>
+          <View style={EditeprofileStyles.avatarContainer}>
+            <Image source={{ uri: avatar }} style={EditeprofileStyles.avatar} />
             <TouchableOpacity 
-              style={styles.changeAvatarButton}
+              style={EditeprofileStyles.changeAvatarButton}
               onPress={() => pickImage('avatar')}
+              disabled={isUploadingAvatar}
             >
-              <Ionicons name="camera" size={16} color="white" />
+              {isUploadingAvatar ? (
+                <ActivityIndicator size="small" color="white" />
+              ) : (
+                <Ionicons name="camera" size={16} color="white" />
+              )}
             </TouchableOpacity>
           </View>
         </View>
-
         {/* Formulaire d'édition */}
-        <View style={styles.formContainer}>
-          {/* Champ Nom */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Nom complet</Text>
+        <View style={EditeprofileStyles.formContainer}>
+          {/* Nom complet */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Nom complet *</Text>
             <TextInput
-              style={styles.input}
+              style={EditeprofileStyles.input}
               value={profile.name}
               onChangeText={(text) => setProfile({...profile, name: text})}
               placeholder="Votre nom"
             />
           </View>
 
-          {/* Champ Pseudo */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Pseudo</Text>
+          {/* Pseudo */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Pseudo</Text>
             <TextInput
-              style={styles.input}
+              style={EditeprofileStyles.input}
               value={profile.username}
               onChangeText={(text) => setProfile({...profile, username: text})}
               placeholder="Votre pseudo"
             />
           </View>
 
-          {/* Champ Email */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Email</Text>
-            <View style={styles.inputWithIcon}>
-              <Ionicons name="mail-outline" size={20} color="#64748b" style={styles.inputIcon} />
+          {/* Email (lecture seule) */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Email *</Text>
+            <View style={EditeprofileStyles.inputWithIcon}>
+              <Ionicons name="mail-outline" size={20} color="#64748b" style={EditeprofileStyles.inputIcon} />
               <TextInput
-                style={[styles.input, styles.iconInput]}
+                style={[EditeprofileStyles.input, EditeprofileStyles.iconInput, EditeprofileStyles.disabledInput]}
                 value={profile.email}
-                onChangeText={(text) => setProfile({...profile, email: text})}
                 placeholder="Votre email"
-                keyboardType="email-address"
+                editable={false}
               />
             </View>
           </View>
 
-          {/* Champ Téléphone */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Téléphone</Text>
-            <View style={styles.inputWithIcon}>
-              <Ionicons name="call-outline" size={20} color="#64748b" style={styles.inputIcon} />
+          {/* Téléphone */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Téléphone</Text>
+            <View style={EditeprofileStyles.inputWithIcon}>
+              <Ionicons name="call-outline" size={20} color="#64748b" style={EditeprofileStyles.inputIcon} />
               <TextInput
-                style={[styles.input, styles.iconInput]}
+                style={[EditeprofileStyles.input, EditeprofileStyles.iconInput]}
                 value={profile.phone}
                 onChangeText={(text) => setProfile({...profile, phone: text})}
                 placeholder="Votre numéro"
@@ -244,22 +610,24 @@ const EditProfileScreen = () => {
             </View>
           </View>
 
-          {/* Champ Date de naissance */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Date de naissance</Text>
+          {/* Date de naissance */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Date de naissance</Text>
             <TouchableOpacity 
-              style={styles.input} 
+              style={EditeprofileStyles.input} 
               onPress={() => setShowDatePicker(true)}
             >
-              <View style={styles.dateInputContainer}>
+              <View style={EditeprofileStyles.dateInputContainer}>
                 <Ionicons name="calendar-outline" size={20} color="#64748b" />
-                <Text style={styles.dateText}>{profile.birthDate}</Text>
+                <Text style={EditeprofileStyles.dateText}>
+                  {profile.birthDate || 'Sélectionner une date'}
+                </Text>
               </View>
             </TouchableOpacity>
             
             {showDatePicker && (
               <DateTimePicker
-                value={new Date(profile.birthDate)}
+                value={profile.birthDate ? new Date(profile.birthDate) : new Date()}
                 mode="date"
                 display="default"
                 onChange={handleDateChange}
@@ -267,49 +635,55 @@ const EditProfileScreen = () => {
             )}
           </View>
 
-          {/* Champ Bio */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Bio</Text>
+          {/* Bio */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Bio</Text>
             <TextInput
-              style={[styles.input, styles.bioInput]}
+              style={[EditeprofileStyles.input, EditeprofileStyles.bioInput]}
               value={profile.bio}
               onChangeText={(text) => setProfile({...profile, bio: text})}
-              placeholder="Décrivez-vous en quelques mots..."
+              placeholder="Décrivez-vous..."
               multiline
               numberOfLines={3}
+              maxLength={150}
             />
-            <Text style={styles.charCount}>{profile.bio.length}/150</Text>
+            <Text style={EditeprofileStyles.charCount}>{profile.bio.length}/150</Text>
           </View>
 
-          {/* Champ Localisation */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Localisation</Text>
-            <View style={styles.inputWithIcon}>
-              <Ionicons name="location-outline" size={20} color="#64748b" style={styles.inputIcon} />
+          {/* Localisation */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Localisation</Text>
+            <View style={EditeprofileStyles.inputWithIcon}>
+              <Ionicons name="location-outline" size={20} color="#64748b" style={EditeprofileStyles.inputIcon} />
               <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center' }}>
                 <TextInput
-                  style={[styles.input, styles.iconInput, { flex: 1 }]}
+                  style={[EditeprofileStyles.input, EditeprofileStyles.iconInput, { flex: 1 }]}
                   value={profile.location}
                   onChangeText={(text) => setProfile({...profile, location: text})}
-                  placeholder={isLoadingLocation ? "Récupération de votre position..." : "Où êtes-vous ?"}
+                  placeholder={isLoadingLocation ? "Récupération..." : "Où êtes-vous ?"}
                 />
                 <TouchableOpacity 
                   onPress={getCurrentLocation}
                   style={{ marginLeft: 10 }}
+                  disabled={isLoadingLocation}
                 >
-                  <Ionicons name="refresh" size={20} color="#667eea" />
+                  <Ionicons 
+                    name={isLoadingLocation ? "hourglass-outline" : "refresh"} 
+                    size={20} 
+                    color="#667eea" 
+                  />
                 </TouchableOpacity>
               </View>
             </View>
           </View>
 
-          {/* Champ Site web */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Site web</Text>
-            <View style={styles.inputWithIcon}>
-              <Ionicons name="link-outline" size={20} color="#64748b" style={styles.inputIcon} />
+          {/* Site web */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Site web</Text>
+            <View style={EditeprofileStyles.inputWithIcon}>
+              <Ionicons name="link-outline" size={20} color="#64748b" style={EditeprofileStyles.inputIcon} />
               <TextInput
-                style={[styles.input, styles.iconInput]}
+                style={[EditeprofileStyles.input, EditeprofileStyles.iconInput]}
                 value={profile.website}
                 onChangeText={(text) => setProfile({...profile, website: text})}
                 placeholder="Votre site web"
@@ -319,21 +693,21 @@ const EditProfileScreen = () => {
           </View>
 
           {/* Centres d'intérêt */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.inputLabel}>Centres d'intérêt</Text>
-            <View style={styles.interestsContainer}>
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Centres d'intérêt</Text>
+            <View style={EditeprofileStyles.interestsContainer}>
               {interests.map((interest, index) => (
-                <View key={index} style={styles.interestTag}>
-                  <Text style={styles.interestText}>{interest}</Text>
+                <View key={index} style={EditeprofileStyles.interestTag}>
+                  <Text style={EditeprofileStyles.interestText}>{interest}</Text>
                   <TouchableOpacity onPress={() => removeInterest(interest)}>
                     <Ionicons name="close" size={16} color="#64748b" />
                   </TouchableOpacity>
                 </View>
               ))}
             </View>
-            <View style={styles.addInterestContainer}>
+            <View style={EditeprofileStyles.addInterestContainer}>
               <TextInput
-                style={[styles.input, styles.interestInput]}
+                style={[EditeprofileStyles.input, EditeprofileStyles.interestInput]}
                 value={newInterest}
                 onChangeText={setNewInterest}
                 placeholder="Ajouter un centre d'intérêt"
@@ -341,11 +715,15 @@ const EditProfileScreen = () => {
                 returnKeyType="done"
               />
               <TouchableOpacity 
-                style={styles.addInterestButton} 
+                style={EditeprofileStyles.addInterestButton} 
                 onPress={addInterest}
                 disabled={!newInterest.trim()}
               >
-                <Ionicons name="add" size={24} color={newInterest.trim() ? "#667eea" : "#cbd5e1"} />
+                <Ionicons 
+                  name="add" 
+                  size={24} 
+                  color={newInterest.trim() ? "#667eea" : "#cbd5e1"} 
+                />
               </TouchableOpacity>
             </View>
           </View>
@@ -353,232 +731,28 @@ const EditProfileScreen = () => {
       </ScrollView>
 
       {/* Boutons d'action */}
-      <View style={styles.actionButtons}>
+      <View style={EditeprofileStyles.actionButtons}>
         <TouchableOpacity 
-          style={styles.cancelButton}
+          style={EditeprofileStyles.cancelButton}
           onPress={() => router.back()}
+          disabled={isSaving}
         >
-          <Text style={styles.cancelButtonText}>Annuler</Text>
+          <Text style={EditeprofileStyles.cancelButtonText}>Annuler</Text>
         </TouchableOpacity>
         <TouchableOpacity 
-          style={styles.saveButton}
+          style={[EditeprofileStyles.saveButton, isSaving && EditeprofileStyles.disabledButton]}
           onPress={handleSave}
+          disabled={isSaving}
         >
-          <Text style={styles.saveButtonText}>Enregistrer</Text>
+          {isSaving ? (
+            <ActivityIndicator size="small" color="white" />
+          ) : (
+            <Text style={EditeprofileStyles.saveButtonText}>Enregistrer</Text>
+          )}
         </TouchableOpacity>
       </View>
     </SafeAreaView>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  scrollContainer: {
-    paddingBottom: 80,
-  },
-  coverContainer: {
-    height: 180,
-    width: '100%',
-    position: 'relative',
-  },
-  coverPhoto: {
-    width: '100%',
-    height: '100%',
-  },
-  coverGradient: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 60,
-  },
-  changeCoverButton: {
-    position: 'absolute',
-    bottom: 15,
-    right: 15,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 20,
-    gap: 5,
-  },
-  changeCoverText: {
-    color: 'white',
-    fontSize: 14,
-  },
-  backButton: {
-    position: 'absolute',
-    top: 15,
-    left: 15,
-    backgroundColor: 'rgba(0,0,0,0.3)',
-    borderRadius: 20,
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarSection: {
-    alignItems: 'center',
-    marginTop: -50,
-  },
-  avatarContainer: {
-    position: 'relative',
-  },
-  avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 4,
-    borderColor: 'white',
-  },
-  changeAvatarButton: {
-    position: 'absolute',
-    bottom: 5,
-    right: 5,
-    backgroundColor: '#667eea',
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'white',
-  },
-  formContainer: {
-    paddingHorizontal: 20,
-    marginTop: 20,
-  },
-  inputContainer: {
-    marginBottom: 20,
-  },
-  inputLabel: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1e293b',
-    marginBottom: 8,
-  },
-  input: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    paddingHorizontal: 15,
-    paddingVertical: 12,
-    fontSize: 16,
-    color: '#1e293b',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  bioInput: {
-    height: 80,
-    textAlignVertical: 'top',
-  },
-  charCount: {
-    textAlign: 'right',
-    fontSize: 12,
-    color: '#64748b',
-    marginTop: 5,
-  },
-  inputWithIcon: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  inputIcon: {
-    position: 'absolute',
-    left: 15,
-    zIndex: 1,
-  },
-  iconInput: {
-    paddingLeft: 45,
-  },
-  interestsContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 10,
-  },
-  interestTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f1f5f9',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    gap: 5,
-  },
-  interestText: {
-    fontSize: 14,
-    color: '#475569',
-  },
-  addInterestContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  interestInput: {
-    flex: 1,
-  },
-  addInterestButton: {
-    backgroundColor: 'white',
-    width: 50,
-    height: 50,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  actionButtons: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    padding: 15,
-    backgroundColor: 'white',
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-    gap: 10,
-  },
-  cancelButton: {
-    flex: 1,
-    backgroundColor: '#f1f5f9',
-    borderRadius: 12,
-    padding: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  cancelButtonText: {
-    color: '#64748b',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  saveButton: {
-    flex: 1,
-    backgroundColor: '#667eea',
-    borderRadius: 12,
-    padding: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  saveButtonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  dateInputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  dateText: {
-    flex: 1,
-    marginLeft: 10,
-  },
-});
 
 export default EditProfileScreen;

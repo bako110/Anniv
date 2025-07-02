@@ -1,5 +1,5 @@
 // services/auth.js
-const API_BASE_URL = 'http://192.168.11.102:8000';
+const API_BASE_URL = 'http://192.168.11.120:8000';
 
 // Configuration par défaut pour les requêtes
 const defaultHeaders = {

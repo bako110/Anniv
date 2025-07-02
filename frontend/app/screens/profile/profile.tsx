@@ -2,34 +2,38 @@ import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TouchableOpacity,
   SafeAreaView,
   ScrollView,
   Image,
-  Dimensions,
   FlatList,
   Animated,
   RefreshControl,
   Alert,
   Share,
+  ActivityIndicator,
 } from 'react-native';
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialIcons, Feather, AntDesign, FontAwesome5 } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getProfile } from '../../../services/profile';
+import Profilestyles from '../../../styles/profile';
 
-const { width, height } = Dimensions.get('window');
 
-// Données du profil utilisateur
-const userProfile = {
+const API_BASE_URL = 'http://192.168.11.120:8000';
+
+
+// Données par défaut en cas d'erreur
+const defaultUserProfile = {
   id: '1',
   name: 'Alex Dubois',
-  username: '@alexdubois',
+  username: '@Batisseur',
   avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&h=150&fit=crop&crop=face',
   coverPhoto: 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=200&fit=crop',
-  bio: 'Passionné d\'aventures et de moments partagés 🌟 Organisateur d\'événements inoubliables',
-  location: 'Paris, France',
-  joinDate: 'Janvier 2023',
+  bio: 'Ici pour vivre, rire, apprendre, et partager ❤️',
+  location: 'Votre loclité',
+  joinDate: 'Janvier 2025',
   level: 'Organisateur Expert',
   points: 1250,
   verified: true,
@@ -54,7 +58,7 @@ const userProfile = {
   ]
 };
 
-// Événements récents
+// Événements récents - gardés statiques pour le moment
 const recentEvents = [
   {
     id: '1',
@@ -82,7 +86,7 @@ const recentEvents = [
   }
 ];
 
-// Photos récentes
+// Photos récentes - gardées statiques pour le moment
 const recentPhotos = [
   'https://images.unsplash.com/photo-1469474968028-56623f02e42e?w=150&h=150&fit=crop',
   'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=150&h=150&fit=crop',
@@ -92,7 +96,7 @@ const recentPhotos = [
   'https://images.unsplash.com/photo-1542401886-65d6c61db217?w=150&h=150&fit=crop'
 ];
 
-// Amis en commun
+// Amis en commun - gardés statiques pour le moment
 const mutualFriends = [
   {
     id: '1',
@@ -120,10 +124,199 @@ const ProfileScreen = () => {
   const [scrollY] = useState(new Animated.Value(0));
   const [refreshing, setRefreshing] = useState(false);
   const [activeTab, setActiveTab] = useState('events');
-  const [isFollowing, setIsFollowing] = useState(userProfile.isFollowing);
+  const [userProfile, setUserProfile] = useState(defaultUserProfile);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isFollowing, setIsFollowing] = useState(false);
 
   // Hauteur fixe du header
   const HEADER_HEIGHT = 250;
+
+  useEffect(() => {
+    loadUserProfile();
+  }, []);
+
+  // Fonction pour valider si c'est un email
+  const isValidEmail = (identifier) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(identifier);
+  };
+
+  // Fonction pour valider si c'est un numéro de téléphone
+  const isValidPhone = (identifier) => {
+    const phoneRegex = /^[\+]?[1-9][\d]{0,15}$/;
+    const cleanPhone = identifier.replace(/[\s\-\(\)]/g, '');
+    return phoneRegex.test(cleanPhone) && cleanPhone.length >= 8;
+  };
+
+  // Fonction pour formater l'identifiant selon son type
+  const formatIdentifier = (identifier) => {
+    if (!identifier) return null;
+    
+    const cleanIdentifier = identifier.trim().toLowerCase();
+    
+    if (isValidEmail(cleanIdentifier)) {
+      return { type: 'email', value: cleanIdentifier };
+    } else if (isValidPhone(identifier)) {
+      return { type: 'phone', value: identifier.trim() };
+    }
+    
+    return null;
+  };
+
+  // Fonction pour générer un nom d'utilisateur basé sur l'identifiant
+  const generateUsername = (identifierObj) => {
+    if (identifierObj.type === 'email') {
+      return '@' + identifierObj.value.split('@')[0];
+    } else if (identifierObj.type === 'phone') {
+      const digits = identifierObj.value.replace(/\D/g, '');
+      return '@user' + digits.slice(-4);
+    }
+    return '@utilisateur';
+  };
+
+  // Fonction pour charger le profil utilisateur
+  const loadUserProfile = async () => {
+    try {
+      setIsLoading(true);
+      
+      // Récupérer identifiant email ou téléphone
+      const identifierObj = await getUserIdentifier();
+      console.log('Identifiant utilisateur récupéré:', identifierObj);
+
+      // Chargement depuis le cache
+      const cachedProfileString = await AsyncStorage.getItem('userProfile');
+      if (cachedProfileString) {
+        const cachedProfile = JSON.parse(cachedProfileString);
+        console.log('Profil en cache trouvé:', cachedProfile);
+        updateUserProfileData(cachedProfile);
+      }
+
+      // Chargement depuis API
+      try {
+        const profileData = await getProfile(identifierObj.value);
+        console.log('Profil récupéré depuis l\'API:', profileData);
+        
+        await AsyncStorage.setItem('userProfile', JSON.stringify(profileData));
+        updateUserProfileData(profileData);
+      } catch (apiError) {
+        console.error('Erreur API:', apiError);
+
+        if (!cachedProfileString) {
+          if (apiError.status === 404) {
+            // Profil non trouvé, profil basique
+            const basicProfile = {
+              ...defaultUserProfile,
+              name: 'Nouvel utilisateur',
+              username: generateUsername(identifierObj),
+              email: identifierObj.type === 'email' ? identifierObj.value : '',
+              phone: identifierObj.type === 'phone' ? identifierObj.value : '',
+              bio: 'Nouveau membre de CelebConnect 🌟',
+            };
+            updateUserProfileData(basicProfile);
+          } else {
+            console.warn('Utilisation profil par défaut suite erreur API');
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Erreur lors du chargement du profil:', error);
+      console.warn('Utilisation profil par défaut suite erreur');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Fonction pour récupérer l'identifiant utilisateur (email ou téléphone)
+  const getUserIdentifier = async () => {
+    try {
+      const sources = [
+        'userIdentifier',
+        'userInfo',
+        'loginCredentials'
+      ];
+
+      for (const source of sources) {
+        const data = await AsyncStorage.getItem(source);
+        if (data) {
+          let identifier = null;
+
+          if (source === 'userIdentifier') {
+            identifier = data;
+          } else {
+            const parsedData = JSON.parse(data);
+            identifier = parsedData.email || parsedData.phone || parsedData.identifier;
+          }
+
+          if (identifier) {
+            const formattedIdentifier = formatIdentifier(identifier);
+            if (formattedIdentifier) {
+              console.log(`Identifiant trouvé dans ${source}:`, formattedIdentifier);
+              return formattedIdentifier;
+            }
+          }
+        }
+      }
+
+      throw new Error("Aucun identifiant valide trouvé (email ou téléphone).");
+
+    } catch (error) {
+      console.error("Erreur getUserIdentifier:", error);
+      throw error;
+    }
+  };
+
+  // Fonction pour mettre à jour les données du profil utilisateur
+  const updateUserProfileData = (profileData) => {
+    const avatarUrl = profileData.avatar_url 
+      ? (profileData.avatar_url.startsWith('http') 
+          ? profileData.avatar_url 
+          : `${API_BASE_URL}${profileData.avatar_url}`) 
+      : defaultUserProfile.avatar;
+
+    const coverPhotoUrl = profileData.coverPhoto 
+      ? (profileData.coverPhoto.startsWith('http') 
+          ? profileData.coverPhoto 
+          : `${API_BASE_URL}${profileData.coverPhoto}`) 
+      : defaultUserProfile.coverPhoto;
+
+    const updatedProfile = {
+      ...defaultUserProfile,
+      id: profileData.id || profileData.user_id || defaultUserProfile.id,
+      name: `${profileData.first_name || ''} ${profileData.last_name || ''}`.trim() || profileData.name || defaultUserProfile.name,
+      username: profileData.username ? `@${profileData.username}` : defaultUserProfile.username,
+      email: profileData.email || '',
+      phone: profileData.phone || '',
+      avatar: avatarUrl,
+      coverPhoto: coverPhotoUrl,
+      bio: profileData.bio || defaultUserProfile.bio,
+      location: profileData.location || defaultUserProfile.location,
+      website: profileData.website || '',
+      birthDate: profileData.birth_date || '',
+      joinDate: profileData.created_at ? formatJoinDate(profileData.created_at) : defaultUserProfile.joinDate,
+      interests: profileData.interests || defaultUserProfile.interests,
+      stats: defaultUserProfile.stats,
+      badges: defaultUserProfile.badges,
+      level: profileData.level || defaultUserProfile.level,
+      points: profileData.points || defaultUserProfile.points,
+      verified: profileData.verified || defaultUserProfile.verified,
+      isFollowing: profileData.isFollowing || defaultUserProfile.isFollowing,
+      isOwnProfile: true,
+    };
+    setUserProfile(updatedProfile);
+    setIsFollowing(updatedProfile.isFollowing);
+  };
+
+
+  // Fonction pour formater la date d'inscription
+  const formatJoinDate = (dateString) => {
+    try {
+      const date = new Date(dateString);
+      const options = { year: 'numeric', month: 'long' };
+      return date.toLocaleDateString('fr-FR', options);
+    } catch (error) {
+      return defaultUserProfile.joinDate;
+    }
+  };
 
   const headerOpacity = scrollY.interpolate({
     inputRange: [0, HEADER_HEIGHT - 100],
@@ -133,9 +326,9 @@ const ProfileScreen = () => {
 
   const onRefresh = React.useCallback(() => {
     setRefreshing(true);
-    setTimeout(() => {
+    loadUserProfile().finally(() => {
       setRefreshing(false);
-    }, 2000);
+    });
   }, []);
 
   const handleShare = async () => {
@@ -158,360 +351,383 @@ const ProfileScreen = () => {
     );
   };
 
-  const renderHeader = () => (
-    <View style={[styles.header, { height: HEADER_HEIGHT }]}>
-      <Animated.View style={[styles.headerImageContainer, { opacity: headerOpacity }]}>
-        <Image source={{ uri: userProfile.coverPhoto }} style={styles.coverPhoto} />
-        <LinearGradient
-          colors={['transparent', 'rgba(0,0,0,0.6)']}
-          style={styles.coverGradient}
-        />
-      </Animated.View>
-      
-      <View style={styles.headerContent}>
+
+const renderHeader = () => (
+  <View style={[Profilestyles.header, { height: HEADER_HEIGHT }]}>
+    <Animated.View style={[Profilestyles.headerImageContainer, { opacity: headerOpacity }]}>
+      <Image source={{ uri: userProfile.coverPhoto }} style={Profilestyles.coverPhoto} />
+      <LinearGradient
+        colors={['transparent', 'rgba(0,0,0,0.6)']}
+        style={Profilestyles.coverGradient}
+      />
+    </Animated.View>
+
+    <View style={Profilestyles.headerContent}>
+      <TouchableOpacity 
+        style={Profilestyles.backButton}
+        onPress={() => router.back()}
+      >
+        <Ionicons name="chevron-back" size={24} color="white" />
+      </TouchableOpacity>
+
+      <View style={Profilestyles.headerActions}>
         <TouchableOpacity 
-          style={styles.backButton}
-          onPress={() => router.back()}
+          style={Profilestyles.headerActionButton}
+          onPress={handleShare}
         >
-          <Ionicons name="chevron-back" size={24} color="white" />
+          <Ionicons name="share-outline" size={20} color="white" />
         </TouchableOpacity>
-        
-        <View style={styles.headerActions}>
+
+        {!userProfile.isOwnProfile && (
           <TouchableOpacity 
-            style={styles.headerActionButton}
-            onPress={handleShare}
+            style={Profilestyles.headerActionButton}
+            onPress={() => {/* Options menu */}}
           >
-            <Ionicons name="share-outline" size={20} color="white" />
+            <Ionicons name="ellipsis-vertical" size={20} color="white" />
           </TouchableOpacity>
-          
-          {!userProfile.isOwnProfile && (
-            <TouchableOpacity 
-              style={styles.headerActionButton}
-              onPress={() => {/* Options menu */}}
-            >
-              <Ionicons name="ellipsis-vertical" size={20} color="white" />
-            </TouchableOpacity>
-          )}
-        </View>
+        )}
       </View>
     </View>
-  );
+  </View>
+);
 
-  const renderProfileInfo = () => (
-    <View style={styles.profileInfo}>
-      <View style={styles.avatarContainer}>
-        <Image source={{ uri: userProfile.avatar }} style={styles.avatar} />
-        {userProfile.verified && (
-          <View style={styles.verifiedBadge}>
-            <Ionicons name="checkmark" size={16} color="white" />
+const renderProfileInfo = () => (
+  <View style={Profilestyles.profileInfo}>
+    <View style={Profilestyles.avatarContainer}>
+      <Image source={{ uri: userProfile.avatar }} style={Profilestyles.avatar} />
+
+      {userProfile.verified && (
+        <View style={Profilestyles.verifiedBadge}>
+          <Ionicons name="checkmark" size={16} color="white" />
+        </View>
+      )}
+      <View style={Profilestyles.statusIndicator} />
+    </View>
+
+    <View style={Profilestyles.userInfo}>
+      <View style={Profilestyles.nameContainer}>
+        <Text style={Profilestyles.userName}>{userProfile.name}</Text>
+        <Text style={Profilestyles.userUsername}>{userProfile.username}</Text>
+      </View>
+
+      <View style={Profilestyles.userLevel}>
+        <Ionicons name="star" size={16} color="#f59e0b" />
+        <Text style={Profilestyles.userLevelText}>{userProfile.level}</Text>
+        <Text style={Profilestyles.userPoints}>• {userProfile.points} pts</Text>
+      </View>
+
+      <Text style={Profilestyles.userBio}>{userProfile.bio}</Text>
+
+      <View style={Profilestyles.userDetails}>
+        {userProfile.location && (
+          <View style={Profilestyles.userDetailItem}>
+            <Ionicons name="location-outline" size={14} color="#64748b" />
+            <Text style={Profilestyles.userDetailText}>{userProfile.location}</Text>
           </View>
         )}
-        <View style={styles.statusIndicator} />
-      </View>
-      
-      <View style={styles.userInfo}>
-        <View style={styles.nameContainer}>
-          <Text style={styles.userName}>{userProfile.name}</Text>
-          <Text style={styles.userUsername}>{userProfile.username}</Text>
+        <View style={Profilestyles.userDetailItem}>
+          <Ionicons name="calendar-outline" size={14} color="#64748b" />
+          <Text style={Profilestyles.userDetailText}>Membre depuis {userProfile.joinDate}</Text>
         </View>
-        
-        <View style={styles.userLevel}>
-          <Ionicons name="star" size={16} color="#f59e0b" />
-          <Text style={styles.userLevelText}>{userProfile.level}</Text>
-          <Text style={styles.userPoints}>• {userProfile.points} pts</Text>
-        </View>
-        
-        <Text style={styles.userBio}>{userProfile.bio}</Text>
-        
-        <View style={styles.userDetails}>
-          <View style={styles.userDetailItem}>
-            <Ionicons name="location-outline" size={14} color="#64748b" />
-            <Text style={styles.userDetailText}>{userProfile.location}</Text>
+        {userProfile.website && (
+          <View style={Profilestyles.userDetailItem}>
+            <Ionicons name="link-outline" size={14} color="#64748b" />
+            <Text style={Profilestyles.userDetailText}>{userProfile.website}</Text>
           </View>
-          <View style={styles.userDetailItem}>
-            <Ionicons name="calendar-outline" size={14} color="#64748b" />
-            <Text style={styles.userDetailText}>Membre depuis {userProfile.joinDate}</Text>
-          </View>
-        </View>
+        )}
       </View>
     </View>
-  );
+  </View>
+);
 
-  const renderActionButtons = () => (
-    <View style={styles.actionButtons}>
-      {userProfile.isOwnProfile ? (
-        <>
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.primaryButton]}
-            onPress={() => router.push('/screens/profile/editprofile')}
-          >
-            <Ionicons name="create-outline" size={18} color="white" />
-            <Text style={[styles.actionButtonText, styles.primaryButtonText]}>
-              Modifier profil
-            </Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.secondaryButton]}
-            onPress={() => router.push('/screens/profile/settings')}
-          >
-            <Ionicons name="settings-outline" size={18} color="#667eea" />
-          </TouchableOpacity>
-        </>
-      ) : (
-        <>
-          <TouchableOpacity 
-            style={[
-              styles.actionButton, 
-              styles.primaryButton,
-              isFollowing && styles.followingButton
-            ]}
-            onPress={handleFollow}
-          >
-            <Ionicons 
-              name={isFollowing ? "checkmark" : "person-add"} 
-              size={18} 
-              color={isFollowing ? "#667eea" : "white"} 
-            />
-            <Text style={[
-              styles.actionButtonText, 
-              isFollowing ? styles.followingButtonText : styles.primaryButtonText
-            ]}>
-              {isFollowing ? 'Suivi' : 'Suivre'}
-            </Text>
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.secondaryButton]}
-            onPress={() => router.push('/screens/social/chat')}
-          >
-            <Ionicons name="chatbubble-outline" size={18} color="#667eea" />
-          </TouchableOpacity>
-          
-          <TouchableOpacity 
-            style={[styles.actionButton, styles.secondaryButton]}
-            onPress={() => {/* Add friend */}}
-          >
-            <Ionicons name="person-add-outline" size={18} color="#667eea" />
-          </TouchableOpacity>
-        </>
-      )}
-    </View>
-  );
-
-  const renderStats = () => (
-    <View style={styles.statsContainer}>
-      <TouchableOpacity 
-        style={styles.statItem}
-        onPress={() => router.push('/screens/social/friends')}
-      >
-        <Text style={styles.statNumber}>{userProfile.stats.friends}</Text>
-        <Text style={styles.statLabel}>Amis</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity 
-        style={styles.statItem}
-        onPress={() => router.push('/screens/events/myevents')}
-      >
-        <Text style={styles.statNumber}>{userProfile.stats.eventsOrganized}</Text>
-        <Text style={styles.statLabel}>Organisés</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity 
-        style={styles.statItem}
-        onPress={() => router.push('/screens/events/myevents')}
-      >
-        <Text style={styles.statNumber}>{userProfile.stats.eventsAttended}</Text>
-        <Text style={styles.statLabel}>Participés</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity 
-        style={styles.statItem}
-        onPress={() => router.push('/screens/memories/photos')}
-      >
-        <Text style={styles.statNumber}>{userProfile.stats.photos}</Text>
-        <Text style={styles.statLabel}>Photos</Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  const renderBadges = () => (
-    <View style={styles.badgesContainer}>
-      <Text style={styles.sectionTitle}>🏆 Badges</Text>
-      <ScrollView 
-        horizontal 
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.badgesList}
-      >
-        {userProfile.badges.map((badge) => (
-          <View key={badge.id} style={styles.badgeItem}>
-            <View style={[styles.badgeIcon, { backgroundColor: badge.color }]}>
-              <Ionicons name={badge.icon} size={20} color="white" />
-            </View>
-            <Text style={styles.badgeName}>{badge.name}</Text>
-          </View>
-        ))}
-      </ScrollView>
-    </View>
-  );
-
-  const renderInterests = () => (
-    <View style={styles.interestsContainer}>
-      <Text style={styles.sectionTitle}>💫 Centres d'intérêt</Text>
-      <View style={styles.interestsList}>
-        {userProfile.interests.map((interest, index) => (
-          <TouchableOpacity key={index} style={styles.interestTag}>
-            <Text style={styles.interestText}>{interest}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-    </View>
-  );
-
-  const renderTabBar = () => (
-    <View style={styles.tabBar}>
-      <TouchableOpacity
-        style={[styles.tabItem, activeTab === 'events' && styles.activeTab]}
-        onPress={() => setActiveTab('events')}
-      >
-        <Ionicons 
-          name="calendar" 
-          size={20} 
-          color={activeTab === 'events' ? '#667eea' : '#64748b'} 
-        />
-        <Text style={[
-          styles.tabText,
-          activeTab === 'events' && styles.activeTabText
-        ]}>
-          Événements
-        </Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity
-        style={[styles.tabItem, activeTab === 'photos' && styles.activeTab]}
-        onPress={() => setActiveTab('photos')}
-      >
-        <Ionicons 
-          name="images" 
-          size={20} 
-          color={activeTab === 'photos' ? '#667eea' : '#64748b'} 
-        />
-        <Text style={[
-          styles.tabText,
-          activeTab === 'photos' && styles.activeTabText
-        ]}>
-          Photos
-        </Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity
-        style={[styles.tabItem, activeTab === 'friends' && styles.activeTab]}
-        onPress={() => setActiveTab('friends')}
-      >
-        <Ionicons 
-          name="people" 
-          size={20} 
-          color={activeTab === 'friends' ? '#667eea' : '#64748b'} 
-        />
-        <Text style={[
-          styles.tabText,
-          activeTab === 'friends' && styles.activeTabText
-        ]}>
-          Amis
-        </Text>
-      </TouchableOpacity>
-    </View>
-  );
-
-  const renderEventsContent = () => (
-    <View style={styles.contentContainer}>
-      {recentEvents.map((event) => (
+const renderActionButtons = () => (
+  <View style={Profilestyles.actionButtons}>
+    {userProfile.isOwnProfile ? (
+      <>
         <TouchableOpacity 
-          key={event.id} 
-          style={styles.eventCard}
-          onPress={() => router.push(`/screens/events/eventdetails?id=${event.id}`)}
+          style={[Profilestyles.actionButton, Profilestyles.primaryButton]}
+          onPress={() => router.push('/screens/profile/editprofile')}
         >
-          <Image source={{ uri: event.image }} style={styles.eventImage} />
-          <View style={styles.eventInfo}>
-            <View style={styles.eventHeader}>
-              <Text style={styles.eventTitle}>{event.title}</Text>
-              <View style={[
-                styles.eventTypeTag,
-                { backgroundColor: event.type === 'organized' ? '#667eea' : '#48bb78' }
-              ]}>
-                <Text style={styles.eventTypeText}>
-                  {event.type === 'organized' ? 'Organisé' : 'Participé'}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.eventDetails}>
-              <View style={styles.eventDetailItem}>
-                <Ionicons name="calendar-outline" size={14} color="#64748b" />
-                <Text style={styles.eventDetailText}>{event.date}</Text>
-              </View>
-              <View style={styles.eventDetailItem}>
-                <Ionicons name="people-outline" size={14} color="#64748b" />
-                <Text style={styles.eventDetailText}>{event.attendees} participants</Text>
-              </View>
-            </View>
+          <Ionicons name="create-outline" size={18} color="white" />
+          <Text style={[Profilestyles.actionButtonText, Profilestyles.primaryButtonText]}>
+            Modifier profil
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[Profilestyles.actionButton, Profilestyles.secondaryButton]}
+          onPress={() => router.push('/screens/profile/settings')}
+        >
+          <Ionicons name="settings-outline" size={18} color="#667eea" />
+        </TouchableOpacity>
+      </>
+    ) : (
+      <>
+        <TouchableOpacity 
+          style={[
+            Profilestyles.actionButton, 
+            Profilestyles.primaryButton,
+            isFollowing && Profilestyles.followingButton
+          ]}
+          onPress={handleFollow}
+        >
+          <Ionicons 
+            name={isFollowing ? "checkmark" : "person-add"} 
+            size={18} 
+            color={isFollowing ? "#667eea" : "white"} 
+          />
+          <Text style={[
+            Profilestyles.actionButtonText, 
+            isFollowing ? Profilestyles.followingButtonText : Profilestyles.primaryButtonText
+          ]}>
+            {isFollowing ? 'Suivi' : 'Suivre'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[Profilestyles.actionButton, Profilestyles.secondaryButton]}
+          onPress={() => router.push('/screens/social/chat')}
+        >
+          <Ionicons name="chatbubble-outline" size={18} color="#667eea" />
+        </TouchableOpacity>
+
+        <TouchableOpacity 
+          style={[Profilestyles.actionButton, Profilestyles.secondaryButton]}
+          onPress={() => {/* Add friend */}}
+        >
+          <Ionicons name="person-add-outline" size={18} color="#667eea" />
+        </TouchableOpacity>
+      </>
+    )}
+  </View>
+);
+
+const renderStats = () => (
+  <View style={Profilestyles.statsContainer}>
+    <TouchableOpacity 
+      style={Profilestyles.statItem}
+      onPress={() => router.push('/screens/social/friends')}
+    >
+      <Text style={Profilestyles.statNumber}>{userProfile.stats.friends}</Text>
+      <Text style={Profilestyles.statLabel}>Amis</Text>
+    </TouchableOpacity>
+
+    <TouchableOpacity 
+      style={Profilestyles.statItem}
+      onPress={() => router.push('/screens/events/myevents')}
+    >
+      <Text style={Profilestyles.statNumber}>{userProfile.stats.eventsOrganized}</Text>
+      <Text style={Profilestyles.statLabel}>Organisés</Text>
+    </TouchableOpacity>
+
+    <TouchableOpacity 
+      style={Profilestyles.statItem}
+      onPress={() => router.push('/screens/events/myevents')}
+    >
+      <Text style={Profilestyles.statNumber}>{userProfile.stats.eventsAttended}</Text>
+      <Text style={Profilestyles.statLabel}>Participés</Text>
+    </TouchableOpacity>
+
+    <TouchableOpacity 
+      style={Profilestyles.statItem}
+      onPress={() => router.push('/screens/memories/photos')}
+    >
+      <Text style={Profilestyles.statNumber}>{userProfile.stats.photos}</Text>
+      <Text style={Profilestyles.statLabel}>Photos</Text>
+    </TouchableOpacity>
+  </View>
+);
+
+const renderBadges = () => (
+  <View style={Profilestyles.badgesContainer}>
+    <Text style={Profilestyles.sectionTitle}>🏆 Badges</Text>
+    <ScrollView 
+      horizontal 
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={Profilestyles.badgesList}
+    >
+      {userProfile.badges.map((badge) => (
+        <View key={badge.id} style={Profilestyles.badgeItem}>
+          <View style={[Profilestyles.badgeIcon, { backgroundColor: badge.color }]}>
+            <Ionicons name={badge.icon} size={20} color="white" />
           </View>
+          <Text style={Profilestyles.badgeName}>{badge.name}</Text>
+        </View>
+      ))}
+    </ScrollView>
+  </View>
+);
+
+const renderInterests = () => (
+  <View style={Profilestyles.interestsContainer}>
+    <Text style={Profilestyles.sectionTitle}>💫 Centres d'intérêt</Text>
+    <View style={Profilestyles.interestsList}>
+      {userProfile.interests.map((interest, index) => (
+        <TouchableOpacity key={index} style={Profilestyles.interestTag}>
+          <Text style={Profilestyles.interestText}>{interest}</Text>
         </TouchableOpacity>
       ))}
     </View>
-  );
+  </View>
+);
 
-  const renderPhotosContent = () => (
-    <View style={styles.contentContainer}>
-      <View style={styles.photosGrid}>
-        {recentPhotos.map((photo, index) => (
-          <TouchableOpacity 
-            key={index} 
-            style={styles.photoItem}
-            onPress={() => router.push(`/screens/memories/photoviewer?index=${index}`)}
-          >
-            <Image source={{ uri: photo }} style={styles.photoImage} />
-          </TouchableOpacity>
-        ))}
-      </View>
+const renderTabBar = () => (
+  <View style={Profilestyles.tabBar}>
+    <TouchableOpacity
+      style={[Profilestyles.tabItem, activeTab === 'events' && Profilestyles.activeTab]}
+      onPress={() => setActiveTab('events')}
+    >
+      <Ionicons 
+        name="calendar" 
+        size={20} 
+        color={activeTab === 'events' ? '#667eea' : '#64748b'} 
+      />
+      <Text style={[
+        Profilestyles.tabText,
+        activeTab === 'events' && Profilestyles.activeTabText
+      ]}>
+        Événements
+      </Text>
+    </TouchableOpacity>
+
+    <TouchableOpacity
+      style={[Profilestyles.tabItem, activeTab === 'photos' && Profilestyles.activeTab]}
+      onPress={() => setActiveTab('photos')}
+    >
+      <Ionicons 
+        name="images" 
+        size={20} 
+        color={activeTab === 'photos' ? '#667eea' : '#64748b'} 
+      />
+      <Text style={[
+        Profilestyles.tabText,
+        activeTab === 'photos' && Profilestyles.activeTabText
+      ]}>
+        Photos
+      </Text>
+    </TouchableOpacity>
+
+    <TouchableOpacity
+      style={[Profilestyles.tabItem, activeTab === 'friends' && Profilestyles.activeTab]}
+      onPress={() => setActiveTab('friends')}
+    >
+      <Ionicons 
+        name="people" 
+        size={20} 
+        color={activeTab === 'friends' ? '#667eea' : '#64748b'} 
+      />
+      <Text style={[
+        Profilestyles.tabText,
+        activeTab === 'friends' && Profilestyles.activeTabText
+      ]}>
+        Amis
+      </Text>
+    </TouchableOpacity>
+  </View>
+);
+
+const renderEventsContent = () => (
+  <View style={Profilestyles.contentContainer}>
+    {recentEvents.map((event) => (
+      <TouchableOpacity 
+        key={event.id} 
+        style={Profilestyles.eventCard}
+        onPress={() => router.push(`/screens/events/eventdetails?id=${event.id}`)}
+      >
+        <Image source={{ uri: event.image }} style={Profilestyles.eventImage} />
+        <View style={Profilestyles.eventInfo}>
+          <View style={Profilestyles.eventHeader}>
+            <Text style={Profilestyles.eventTitle}>{event.title}</Text>
+            <View style={[
+              Profilestyles.eventTypeTag,
+              { backgroundColor: event.type === 'organized' ? '#667eea' : '#48bb78' }
+            ]}>
+              <Text style={Profilestyles.eventTypeText}>
+                {event.type === 'organized' ? 'Organisé' : 'Participé'}
+              </Text>
+            </View>
+          </View>
+          <View style={Profilestyles.eventDetails}>
+            <View style={Profilestyles.eventDetailItem}>
+              <Ionicons name="calendar-outline" size={14} color="#64748b" />
+              <Text style={Profilestyles.eventDetailText}>{event.date}</Text>
+            </View>
+            <View style={Profilestyles.eventDetailItem}>
+              <Ionicons name="people-outline" size={14} color="#64748b" />
+              <Text style={Profilestyles.eventDetailText}>{event.attendees} participants</Text>
+            </View>
+          </View>
+        </View>
+      </TouchableOpacity>
+    ))}
+  </View>
+);
+
+const renderPhotosContent = () => (
+  <View style={Profilestyles.contentContainer}>
+    <View style={Profilestyles.photosGrid}>
+      {recentPhotos.map((photo, index) => (
+        <TouchableOpacity 
+          key={index} 
+          style={Profilestyles.photoItem}
+          onPress={() => router.push(`/screens/memories/photoviewer?index=${index}`)}
+        >
+          <Image source={{ uri: photo }} style={Profilestyles.photoImage} />
+        </TouchableOpacity>
+      ))}
     </View>
-  );
+  </View>
+);
 
-  const renderFriendsContent = () => (
-    <View style={styles.contentContainer}>
-      <View style={styles.friendsGrid}>
-        {mutualFriends.map((friend) => (
-          <TouchableOpacity 
-            key={friend.id} 
-            style={styles.friendCard}
-            onPress={() => router.push(`/screens/profile/profile?userId=${friend.id}`)}
-          >
-            <Image source={{ uri: friend.avatar }} style={styles.friendAvatar} />
-            <Text style={styles.friendName}>{friend.name}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
+const renderFriendsContent = () => (
+  <View style={Profilestyles.contentContainer}>
+    <View style={Profilestyles.friendsGrid}>
+      {mutualFriends.map((friend) => (
+        <TouchableOpacity 
+          key={friend.id} 
+          style={Profilestyles.friendCard}
+          onPress={() => router.push(`/screens/profile/profile?userId=${friend.id}`)}
+        >
+          <Image source={{ uri: friend.avatar }} style={Profilestyles.friendAvatar} />
+          <Text style={Profilestyles.friendName}>{friend.name}</Text>
+        </TouchableOpacity>
+      ))}
     </View>
-  );
+  </View>
+);
 
-  const renderTabContent = () => {
-    switch (activeTab) {
-      case 'events':
-        return renderEventsContent();
-      case 'photos':
-        return renderPhotosContent();
-      case 'friends':
-        return renderFriendsContent();
-      default:
-        return renderEventsContent();
-    }
-  };
+const renderTabContent = () => {
+  switch (activeTab) {
+    case 'events':
+      return renderEventsContent();
+    case 'photos':
+      return renderPhotosContent();
+    case 'friends':
+      return renderFriendsContent();
+    default:
+      return renderEventsContent();
+  }
+};
+
+
+  // Affichage du loader pendant le chargement
+  if (isLoading) {
+    return (
+      <SafeAreaView style={Profilestyles.container}>
+        <View style={Profilestyles.loadingContainer}>
+          <ActivityIndicator size="large" color="#667eea" />
+          <Text style={Profilestyles.loadingText}>Chargement du profil...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <View style={styles.container}>
+    <View style={Profilestyles.container}>
       {renderHeader()}
       
       <ScrollView
-        style={[styles.scrollView, { marginTop: HEADER_HEIGHT - 60 }]}
+        style={[Profilestyles.scrollView, { marginTop: HEADER_HEIGHT - 60 }]}
         showsVerticalScrollIndicator={false}
         onScroll={Animated.event(
           [{ nativeEvent: { contentOffset: { y: scrollY } } }],
@@ -536,424 +752,5 @@ const ProfileScreen = () => {
     </View>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  header: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    zIndex: 1000,
-    overflow: 'hidden',
-  },
-  headerImageContainer: {
-    width: '100%',
-    height: '76%',
-  },
-  coverPhoto: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-  },
-  coverGradient: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 120,
-  },
-  headerContent: {
-    position: 'absolute',
-    top: 50,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-  },
-  backButton: {
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    borderRadius: 20,
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  headerActions: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  headerActionButton: {
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    borderRadius: 20,
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  profileInfo: {
-    top: 10,
-    backgroundColor: 'white',
-    marginHorizontal: 20,
-    marginTop: 20,
-    borderRadius: 16,
-    padding: 20,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  avatarContainer: {
-    position: 'relative',
-    alignSelf: 'center',
-    marginTop: -50,
-    marginBottom: 15,
-  },
-  avatar: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 4,
-    borderColor: 'white',
-  },
-  verifiedBadge: {
-    position: 'absolute',
-    top: 5,
-    right: 5,
-    backgroundColor: '#667eea',
-    borderRadius: 12,
-    width: 24,
-    height: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 2,
-    borderColor: 'white',
-  },
-  statusIndicator: {
-    position: 'absolute',
-    bottom: 8,
-    right: 8,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#22c55e',
-    borderWidth: 3,
-    borderColor: 'white',
-  },
-  userInfo: {
-    alignItems: 'center',
-  },
-  nameContainer: {
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  userName: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    color: '#1e293b',
-    marginBottom: 2,
-  },
-  userUsername: {
-    fontSize: 16,
-    color: '#64748b',
-  },
-  userLevel: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  userLevelText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#f59e0b',
-    marginLeft: 6,
-  },
-  userPoints: {
-    fontSize: 14,
-    color: '#64748b',
-    marginLeft: 6,
-  },
-  userBio: {
-    fontSize: 16,
-    color: '#475569',
-    textAlign: 'center',
-    lineHeight: 22,
-    marginBottom: 15,
-  },
-  userDetails: {
-    alignItems: 'center',
-    gap: 5,
-  },
-  userDetailItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  userDetailText: {
-    fontSize: 14,
-    color: '#64748b',
-    marginLeft: 6,
-  },
-  actionButtons: {
-    flexDirection: 'row',
-    paddingHorizontal: 20,
-    marginTop: 20,
-    gap: 10,
-  },
-  actionButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 25,
-    gap: 8,
-  },
-  primaryButton: {
-    flex: 1,
-    backgroundColor: '#667eea',
-  },
-  secondaryButton: {
-    backgroundColor: 'white',
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    width: 50,
-  },
-  followingButton: {
-    backgroundColor: 'white',
-    borderWidth: 1,
-    borderColor: '#667eea',
-  },
-  actionButtonText: {
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  primaryButtonText: {
-    color: 'white',
-  },
-  followingButtonText: {
-    color: '#667eea',
-  },
-  statsContainer: {
-    flexDirection: 'row',
-    backgroundColor: 'white',
-    marginHorizontal: 20,
-    marginTop: 20,
-    borderRadius: 16,
-    paddingVertical: 20,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  statItem: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  statNumber: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1e293b',
-    marginBottom: 4,
-  },
-  statLabel: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '500',
-  },
-  badgesContainer: {
-    marginHorizontal: 20,
-    marginTop: 25,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1e293b',
-    marginBottom: 15,
-  },
-  badgesList: {
-    paddingLeft: 5,
-  },
-  badgeItem: {
-    alignItems: 'center',
-    marginRight: 20,
-    width: 80,
-  },
-  badgeIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  badgeName: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#475569',
-    textAlign: 'center',
-  },
-  interestsContainer: {
-    marginHorizontal: 20,
-    marginTop: 25,
-  },
-  interestsList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  interestTag: {
-    backgroundColor: '#f1f5f9',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-  },
-  interestText: {
-    fontSize: 13,
-    color: '#475569',
-    fontWeight: '500',
-  },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: 'white',
-    marginHorizontal: 20,
-    marginTop: 25,
-    borderRadius: 12,
-    padding: 6,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  tabItem: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 6,
-  },
-  activeTab: {
-    backgroundColor: '#f8fafc',
-  },
-  tabText: {
-    fontSize: 14,
-    fontWeight: '500',
-    color: '#64748b',
-  },
-  activeTabText: {
-    color: '#667eea',
-    fontWeight: '600',
-  },
-  contentContainer: {
-    marginHorizontal: 20,
-    marginTop: 20,
-  },
-  eventCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    marginBottom: 15,
-    overflow: 'hidden',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  eventImage: {
-    width: '100%',
-    height: 120,
-    resizeMode: 'cover',
-  },
-  eventInfo: {
-    padding: 15,
-  },
-  eventHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 10,
-  },
-  eventTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1e293b',
-    flex: 1,
-    marginRight: 10,
-  },
-  eventTypeTag: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  eventTypeText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: 'white',
-  },
-  eventDetails: {
-    flexDirection: 'row',
-    gap: 15,
-  },
-  eventDetailItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  eventDetailText: {
-    fontSize: 13,
-    color: '#64748b',
-    marginLeft: 4,
-  },
-  photosGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-  },
-  photoItem: {
-    width: (width - 52) / 3,
-    height: (width - 52) / 3,
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  photoImage: {
-    width: '100%',
-    height: '100%',
-    resizeMode: 'cover',
-  },
-  friendsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 15,
-  },
-  friendCard: {
-    alignItems: 'center',
-    width: (width - 70) / 3,
-  },
-  friendAvatar: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    marginBottom: 8,
-  },
-  friendName: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#475569',
-    textAlign: 'center',
-  },
-});
 
 export default ProfileScreen;

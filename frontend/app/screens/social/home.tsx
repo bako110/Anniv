@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   TouchableOpacity,
   SafeAreaView,
   ScrollView,
@@ -18,8 +17,12 @@ import {
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialIcons, Feather, AntDesign, FontAwesome5 } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getProfile } from '../../../services/profile';
+import Homestyles from '../../../styles/home';
 
 const { width, height } = Dimensions.get('window');
+const API_BASE_URL = 'http://192.168.11.120:8000';
 
 // Données d'exemple pour les prochains anniversaires
 const upcomingBirthdays = [
@@ -128,19 +131,19 @@ const friendSuggestions = [
 // Menu principal avec icônes
 const mainMenuItems = [
   {
-    id: 'social',
-    title: 'Social',
-    icon: 'people',
-    color: '#48bb78',
-    route: '/screens/social/home',
-    type: 'Ionicons'
-  },
-  {
     id: 'events',
     title: 'Événements',
     icon: 'calendar',
     color: '#ed8936',
     route: '/screens/events/eventsList',
+    type: 'Ionicons'
+  },
+  {
+    id: 'social',
+    title: 'Social',
+    icon: 'people',
+    color: '#48bb78',
+    route: '/screens/social/home',
     type: 'Ionicons'
   },
   {
@@ -229,24 +232,229 @@ const quickActions = [
   }
 ];
 
+// Profil par défaut
+const defaultUserProfile = {
+  name: 'Utilisateur',
+  avatar: 'https://ui-avatars.com/api/?name=User&background=667eea&color=ffffff&size=128',
+  profileImage: null,
+  level: 'Nouveau',
+  points: 0,
+  online_status: false
+};
+
 const HomeScreen = () => {
   const [fadeAnim] = useState(new Animated.Value(0));
   const [notificationCount] = useState(5);
   const [refreshing, setRefreshing] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
-  
+  const [user, setUser] = useState(defaultUserProfile);
+  const [isLoading, setIsLoading] = useState(false);
+  const [avatarError, setAvatarError] = useState(false);
+  const [profileImageError, setProfileImageError] = useState(false);
+
   // États pour la gestion du bouton retour
   const [backPressCount, setBackPressCount] = useState(0);
   const backPressTimer = useRef(null);
 
+  // Convertir le niveau numérique en texte
+  const getLevelText = (level) => {
+    switch(level) {
+      case 1: return 'Nouveau';
+      case 2: return 'Intermédiaire';
+      case 3: return 'Avancé';
+      case 4: return 'Expert';
+      default: return 'Nouveau';
+    }
+  };
+
+  // Fonction pour générer l'avatar de fallback
+  const generateFallbackAvatar = (name) => {
+    return `https://ui-avatars.com/api/?name=${encodeURIComponent(name || 'User')}&background=667eea&color=ffffff&size=128`;
+  };
+
+  // Fonction pour créer un profil basique
+  const createBasicProfile = (identifierObj) => {
+    return {
+      first_name: 'Utilisateur',
+      last_name: '',
+      email: identifierObj.type === 'email' ? identifierObj.value : null,
+      phone: identifierObj.type === 'phone' ? identifierObj.value : null,
+      avatar_url: generateFallbackAvatar('Utilisateur'),
+      level: 1,
+      points: 0,
+      online_status: false
+    };
+  };
+
+  // Fonction pour formater l'URL de l'avatar
+  const formatAvatarUrl = (avatarUrl) => {
+    if (!avatarUrl) return generateFallbackAvatar('Utilisateur');
+    if (avatarUrl.startsWith('http://') || avatarUrl.startsWith('https://')) {
+      return avatarUrl;
+    }
+    return `${API_BASE_URL}${avatarUrl}`;
+  };
+
+  // Fonction pour mettre à jour les données du profil utilisateur
+  const updateUserProfileData = (profileData) => {
+    const userName = profileData.first_name || 'Utilisateur';
+    setUser({
+      name: userName,
+      avatar: formatAvatarUrl(profileData.avatar_url),
+      profileImage: profileData.profile_image_url || null,
+      level: getLevelText(profileData.level),
+      points: profileData.points || 0,
+      online_status: profileData.online_status || false
+    });
+  };
+
+  // Fonction pour récupérer l'identifiant utilisateur
+  const getUserIdentifier = async () => {
+    try {
+      const loginIdentifier = await AsyncStorage.getItem('loginIdentifier');
+      if (loginIdentifier) {
+        const parsed = JSON.parse(loginIdentifier);
+        console.log('Identifiant de connexion trouvé:', parsed);
+        return parsed;
+      }
+
+      const sources = [
+        'userEmail',
+        'userPhone',
+        'userIdentifier',
+        'userInfo',
+        'loginCredentials'
+      ];
+      const foundIdentifiers = [];
+      for (const source of sources) {
+        const data = await AsyncStorage.getItem(source);
+        if (data) {
+          let identifier = null;
+          try {
+            if (source === 'userEmail' || source === 'userPhone' || source === 'userIdentifier') {
+              const parsed = JSON.parse(data);
+              identifier = typeof parsed === 'string' ? parsed : parsed.value || parsed;
+            } else {
+              const parsedData = JSON.parse(data);
+              identifier = parsedData.email || parsedData.phone || parsedData.identifier;
+            }
+          } catch (parseError) {
+            identifier = data;
+          }
+          if (identifier) {
+            const formattedIdentifier = formatIdentifier(identifier);
+            if (formattedIdentifier) {
+              foundIdentifiers.push({
+                source,
+                ...formattedIdentifier
+              });
+            }
+          }
+        }
+      }
+      if (foundIdentifiers.length === 0) {
+        throw new Error("Aucun identifiant valide trouvé (email ou téléphone).");
+      }
+
+      const emailIdentifier = foundIdentifiers.find(id => id.type === 'email');
+      if (emailIdentifier) {
+        console.log(`Identifiant email sélectionné depuis ${emailIdentifier.source}:`, emailIdentifier);
+        return {
+          type: emailIdentifier.type,
+          value: emailIdentifier.value
+        };
+      }
+
+      const phoneIdentifier = foundIdentifiers.find(id => id.type === 'phone');
+      if (phoneIdentifier) {
+        console.log(`Identifiant téléphone sélectionné depuis ${phoneIdentifier.source}:`, phoneIdentifier);
+        return {
+          type: phoneIdentifier.type,
+          value: phoneIdentifier.value
+        };
+      }
+
+      throw new Error("Aucun identifiant valide trouvé après formatage.");
+    } catch (error) {
+      console.error("Erreur getUserIdentifier:", error);
+      throw error;
+    }
+  };
+
+  // Fonction pour formater l'identifiant
+  const formatIdentifier = (identifier) => {
+    if (!identifier) return null;
+    const cleanIdentifier = typeof identifier === 'string' ? identifier.trim() : String(identifier).trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (emailRegex.test(cleanIdentifier)) {
+      return {
+        type: 'email',
+        value: cleanIdentifier.toLowerCase()
+      };
+    }
+    const phoneRegex = /^[\+]?[0-9\s\-\(\)]+$/;
+    const cleanPhone = cleanIdentifier.replace(/[\s\-\(\)]/g, '');
+    if (phoneRegex.test(cleanIdentifier) && cleanPhone.length >= 8) {
+      return {
+        type: 'phone',
+        value: cleanPhone
+      };
+    }
+    return null;
+  };
+
   useEffect(() => {
+    const loadProfile = async () => {
+      if (setIsLoading) {
+        setIsLoading(true);
+      }
+      try {
+        const identifierObj = await getUserIdentifier();
+        console.log('Identifiant utilisateur récupéré:', identifierObj);
+
+        const cachedProfileString = await AsyncStorage.getItem('userProfile');
+        if (cachedProfileString) {
+          const cachedProfile = JSON.parse(cachedProfileString);
+          console.log('Profil en cache trouvé:', cachedProfile);
+          updateUserProfileData(cachedProfile);
+        }
+
+        try {
+          console.log('Appel API avec identifiant:', identifierObj.value);
+          const profileData = await getProfile(identifierObj.value);
+          console.log('Profil récupéré depuis l\'API:', profileData);
+
+          await AsyncStorage.setItem('userProfile', JSON.stringify(profileData));
+          updateUserProfileData(profileData);
+        } catch (apiError) {
+          console.error('Erreur API:', apiError);
+          if (!cachedProfileString && apiError.status === 404) {
+            const basicProfile = createBasicProfile(identifierObj);
+            updateUserProfileData(basicProfile);
+          } else if (!cachedProfileString) {
+            console.warn('Utilisation profil par défaut suite erreur API');
+            updateUserProfileData(defaultUserProfile);
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors du chargement du profil:', error);
+        console.warn('Utilisation profil par défaut suite erreur');
+        updateUserProfileData(defaultUserProfile);
+      } finally {
+        if (setIsLoading) {
+          setIsLoading(false);
+        }
+      }
+    };
+
+    loadProfile();
+
     Animated.timing(fadeAnim, {
       toValue: 1,
       duration: 1000,
       useNativeDriver: true,
     }).start();
 
-    // Mettre à jour l'heure toutes les minutes
     const timer = setInterval(() => {
       setCurrentTime(new Date());
     }, 60000);
@@ -254,15 +462,13 @@ const HomeScreen = () => {
     return () => clearInterval(timer);
   }, []);
 
-  // Gestion du bouton retour
   useEffect(() => {
     const backAction = () => {
       handleBackPress();
-      return true; // Empêche le comportement par défaut
+      return true;
     };
 
     const backHandler = BackHandler.addEventListener('hardwareBackPress', backAction);
-
     return () => {
       backHandler.remove();
       if (backPressTimer.current) {
@@ -273,32 +479,22 @@ const HomeScreen = () => {
 
   const handleBackPress = () => {
     if (backPressCount === 0) {
-      // Premier appui : ne rien faire, juste rester sur l'écran
       setBackPressCount(1);
-      
-      // Réinitialiser le compteur après 2 secondes
       backPressTimer.current = setTimeout(() => {
         setBackPressCount(0);
       }, 2000);
-
     } else if (backPressCount === 1) {
-      // Deuxième appui : afficher le message d'avertissement
       setBackPressCount(2);
-      
       if (Platform.OS === 'android') {
         ToastAndroid.show('Appuyez encore une fois pour quitter l\'application', ToastAndroid.SHORT);
       }
-      
-      // Réinitialiser le compteur après 2 secondes
       if (backPressTimer.current) {
         clearTimeout(backPressTimer.current);
       }
       backPressTimer.current = setTimeout(() => {
         setBackPressCount(0);
       }, 2000);
-
     } else if (backPressCount === 2) {
-      // Troisième appui : quitter l'application
       if (backPressTimer.current) {
         clearTimeout(backPressTimer.current);
       }
@@ -306,15 +502,7 @@ const HomeScreen = () => {
     }
   };
 
-  const user = {
-    name: 'Alex',
-    avatar: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=80&h=80&fit=crop&crop=face',
-    level: 'Organisateur Expert',
-    points: 1250
-  };
-
   const handleMenuPress = (route) => {
-    // Réinitialiser le compteur de retour quand on navigue vers un autre écran
     setBackPressCount(0);
     if (backPressTimer.current) {
       clearTimeout(backPressTimer.current);
@@ -322,12 +510,33 @@ const HomeScreen = () => {
     router.push(route);
   };
 
+  const handleAvatarError = () => {
+    setAvatarError(true);
+  };
+
+  const handleProfileImageError = () => {
+    setProfileImageError(true);
+  };
+
   const onRefresh = React.useCallback(() => {
     setRefreshing(true);
-    // Simuler le rechargement des données
-    setTimeout(() => {
-      setRefreshing(false);
-    }, 2000);
+    const loadProfile = async () => {
+      try {
+        const identifierObj = await getUserIdentifier();
+        if (identifierObj) {
+          const profile = await getProfile(identifierObj.value);
+          if (profile) {
+            updateUserProfileData(profile);
+            await AsyncStorage.setItem('userProfile', JSON.stringify(profile));
+          }
+        }
+      } catch (error) {
+        console.error('Erreur lors du rafraîchissement du profil:', error);
+      } finally {
+        setRefreshing(false);
+      }
+    };
+    loadProfile();
   }, []);
 
   const getGreeting = () => {
@@ -338,39 +547,52 @@ const HomeScreen = () => {
   };
 
   const renderHeader = () => (
-    <View style={styles.header}>
-      <View style={styles.headerLeft}>
+    <View style={Homestyles.header}>
+      <View style={Homestyles.headerLeft}>
         <TouchableOpacity onPress={() => handleMenuPress('/screens/profile/profile')}>
-          <View style={styles.avatarContainer}>
-            <Image source={{ uri: user.avatar }} style={styles.userAvatar} />
-            <View style={styles.statusIndicator} />
+          <View style={Homestyles.avatarContainer}>
+            {!profileImageError && user.profileImage && (
+              <Image
+                source={{ uri: user.profileImage }}
+                style={Homestyles.profileImage}
+                onError={handleProfileImageError}
+              />
+            )}
+            <Image
+              source={{ uri: avatarError ? generateFallbackAvatar(user.name) : user.avatar }}
+              style={Homestyles.userAvatar}
+              onError={handleAvatarError}
+            />
+            <View style={[
+              Homestyles.statusIndicator,
+              { backgroundColor: user.online_status ? '#22c55e' : '#64748b' }
+            ]} />
           </View>
         </TouchableOpacity>
-        <View style={styles.userInfo}>
-          <Text style={styles.greeting}>{getGreeting()},</Text>
-          <Text style={styles.userName}>{user.name} 👋</Text>
-          <View style={styles.userLevel}>
+        <View style={Homestyles.userInfo}>
+          <Text style={Homestyles.greeting}>{getGreeting()},</Text>
+          <Text style={Homestyles.userName}>{user.name} 👋</Text>
+          <View style={Homestyles.userLevel}>
             <Ionicons name="star" size={12} color="#f59e0b" />
-            <Text style={styles.userLevelText}>{user.level}</Text>
+            <Text style={Homestyles.userLevelText}>{user.level} • {user.points} pts</Text>
           </View>
         </View>
       </View>
-      
-      <View style={styles.headerRight}>
-        <TouchableOpacity 
-          style={styles.headerIcon}
+      <View style={Homestyles.headerRight}>
+        <TouchableOpacity
+          style={Homestyles.headerIcon}
           onPress={() => handleMenuPress('/screens/social/search')}
         >
           <Ionicons name="search" size={24} color="#667eea" />
         </TouchableOpacity>
-        <TouchableOpacity 
-          style={styles.headerIcon}
+        <TouchableOpacity
+          style={Homestyles.headerIcon}
           onPress={() => handleMenuPress('/screens/social/notifications')}
         >
           <Ionicons name="notifications" size={24} color="#667eea" />
           {notificationCount > 0 && (
-            <View style={styles.notificationBadge}>
-              <Text style={styles.badgeText}>{notificationCount}</Text>
+            <View style={Homestyles.notificationBadge}>
+              <Text style={Homestyles.badgeText}>{notificationCount}</Text>
             </View>
           )}
         </TouchableOpacity>
@@ -379,22 +601,22 @@ const HomeScreen = () => {
   );
 
   const renderHorizontalMainMenu = () => (
-    <View style={styles.horizontalMenuContainer}>
-      <ScrollView 
-        horizontal 
+    <View style={Homestyles.horizontalMenuContainer}>
+      <ScrollView
+        horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.horizontalMenuScroll}
+        contentContainerStyle={Homestyles.horizontalMenuScroll}
       >
         {mainMenuItems.map((item) => (
           <TouchableOpacity
             key={item.id}
-            style={styles.horizontalMenuItem}
+            style={Homestyles.horizontalMenuItem}
             onPress={() => handleMenuPress(item.route)}
           >
-            <View style={[styles.horizontalMenuIcon, { backgroundColor: item.color }]}>
+            <View style={[Homestyles.horizontalMenuIcon, { backgroundColor: item.color }]}>
               <Ionicons name={item.icon} size={24} color="white" />
             </View>
-            <Text style={styles.horizontalMenuText}>{item.title}</Text>
+            <Text style={Homestyles.horizontalMenuText}>{item.title}</Text>
           </TouchableOpacity>
         ))}
       </ScrollView>
@@ -404,34 +626,32 @@ const HomeScreen = () => {
   const renderTodayHighlight = () => {
     const todaysBirthdays = upcomingBirthdays.filter(b => b.isToday);
     const todaysEvents = upcomingEvents.filter(e => e.date === 'Aujourd\'hui');
-    
     if (todaysBirthdays.length === 0 && todaysEvents.length === 0) {
       return null;
     }
-
     return (
-      <Animated.View style={[styles.todayHighlight, { opacity: fadeAnim }]}>
+      <Animated.View style={[Homestyles.todayHighlight, { opacity: fadeAnim }]}>
         <LinearGradient
           colors={['#667eea', '#764ba2']}
-          style={styles.todayGradient}
+          style={Homestyles.todayGradient}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
         >
-          <View style={styles.todayContent}>
-            <Text style={styles.todayTitle}>🎉 Aujourd'hui</Text>
+          <View style={Homestyles.todayContent}>
+            <Text style={Homestyles.todayTitle}>🎉 Aujourd'hui</Text>
             {todaysBirthdays.map(birthday => (
-              <Text key={birthday.id} style={styles.todayItem}>
+              <Text key={birthday.id} style={Homestyles.todayItem}>
                 🎂 Anniversaire de {birthday.name} ({birthday.age} ans)
               </Text>
             ))}
             {todaysEvents.map(event => (
-              <Text key={event.id} style={styles.todayItem}>
+              <Text key={event.id} style={Homestyles.todayItem}>
                 📅 {event.title} à {event.time}
               </Text>
             ))}
           </View>
-          <TouchableOpacity 
-            style={styles.todayButton}
+          <TouchableOpacity
+            style={Homestyles.todayButton}
             onPress={() => handleMenuPress('/screens/calendar/CalendarScreen')}
           >
             <AntDesign name="right" size={20} color="white" />
@@ -442,19 +662,19 @@ const HomeScreen = () => {
   };
 
   const renderQuickActions = () => (
-    <View style={styles.quickActionsContainer}>
-      <Text style={styles.sectionTitle}>⚡ Actions rapides</Text>
-      <View style={styles.quickActionsGrid}>
+    <View style={Homestyles.quickActionsContainer}>
+      <Text style={Homestyles.sectionTitle}>⚡ Actions rapides</Text>
+      <View style={Homestyles.quickActionsGrid}>
         {quickActions.map((action) => (
           <TouchableOpacity
             key={action.id}
-            style={styles.quickActionItem}
+            style={Homestyles.quickActionItem}
             onPress={() => handleMenuPress(action.route)}
           >
-            <View style={[styles.quickActionIcon, { backgroundColor: action.color }]}>
+            <View style={[Homestyles.quickActionIcon, { backgroundColor: action.color }]}>
               <Ionicons name={action.icon} size={20} color="white" />
             </View>
-            <Text style={styles.quickActionText}>{action.title}</Text>
+            <Text style={Homestyles.quickActionText}>{action.title}</Text>
           </TouchableOpacity>
         ))}
       </View>
@@ -462,83 +682,81 @@ const HomeScreen = () => {
   );
 
   const renderUpcomingBirthdays = () => (
-    <View style={styles.birthdaysContainer}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>🎂 Prochains anniversaires</Text>
+    <View style={Homestyles.birthdaysContainer}>
+      <View style={Homestyles.sectionHeader}>
+        <Text style={Homestyles.sectionTitle}>🎂 Prochains anniversaires</Text>
         <TouchableOpacity onPress={() => handleMenuPress('/screens/calendar/birthdays')}>
-          <Text style={styles.seeAllText}>Voir tout</Text>
+          <Text style={Homestyles.seeAllText}>Voir tout</Text>
         </TouchableOpacity>
       </View>
-      
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}
         data={upcomingBirthdays}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[
-              styles.birthdayCard,
-              item.isToday && styles.birthdayCardToday
+              Homestyles.birthdayCard,
+              item.isToday && Homestyles.birthdayCardToday
             ]}
             onPress={() => handleMenuPress(`/screens/profile/ProfileScreen?userId=${item.id}`)}
           >
-            <View style={styles.birthdayImageContainer}>
-              <Image source={{ uri: item.avatar }} style={styles.birthdayImage} />
+            <View style={Homestyles.birthdayImageContainer}>
+              <Image source={{ uri: item.avatar }} style={Homestyles.birthdayImage} />
               {item.isToday ? (
-                <View style={styles.todayBadge}>
-                  <Text style={styles.todayBadgeText}>🎉</Text>
+                <View style={Homestyles.todayBadge}>
+                  <Text style={Homestyles.todayBadgeText}>🎉</Text>
                 </View>
               ) : (
-                <View style={styles.daysLeftBadge}>
-                  <Text style={styles.daysLeftText}>{item.daysLeft}j</Text>
+                <View style={Homestyles.daysLeftBadge}>
+                  <Text style={Homestyles.daysLeftText}>{item.daysLeft}j</Text>
                 </View>
               )}
             </View>
-            <Text style={styles.birthdayName} numberOfLines={1}>{item.name}</Text>
-            <Text style={styles.birthdayAge}>{item.age} ans</Text>
-            <Text style={styles.birthdayDate}>{item.date}</Text>
+            <Text style={Homestyles.birthdayName} numberOfLines={1}>{item.name}</Text>
+            <Text style={Homestyles.birthdayAge}>{item.age} ans</Text>
+            <Text style={Homestyles.birthdayDate}>{item.date}</Text>
           </TouchableOpacity>
         )}
-        contentContainerStyle={styles.birthdaysList}
+        contentContainerStyle={Homestyles.birthdaysList}
       />
     </View>
   );
 
   const renderUpcomingEvents = () => (
-    <View style={styles.eventsContainer}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>📅 Événements à venir</Text>
+    <View style={Homestyles.eventsContainer}>
+      <View style={Homestyles.sectionHeader}>
+        <Text style={Homestyles.sectionTitle}>📅 Événements à venir</Text>
         <TouchableOpacity onPress={() => handleMenuPress('/screens/events/EventsListScreen')}>
-          <Text style={styles.seeAllText}>Voir tout</Text>
+          <Text style={Homestyles.seeAllText}>Voir tout</Text>
         </TouchableOpacity>
       </View>
-      
       {upcomingEvents.map((event) => (
-        <TouchableOpacity 
+        <TouchableOpacity
           key={event.id}
-          style={styles.eventCard}
+          style={Homestyles.eventCard}
           onPress={() => handleMenuPress(`/screens/events/EventDetailsScreen?eventId=${event.id}`)}
         >
-          <Image source={{ uri: event.image }} style={styles.eventImage} />
-          <View style={styles.eventInfo}>
-            <Text style={styles.eventTitle} numberOfLines={1}>{event.title}</Text>
-            <View style={styles.eventDetails}>
-              <View style={styles.eventDetailItem}>
+          <Image source={{ uri: event.image }} style={Homestyles.eventImage} />
+          <View style={Homestyles.eventInfo}>
+            <Text style={Homestyles.eventTitle} numberOfLines={1}>{event.title}</Text>
+            <View style={Homestyles.eventDetails}>
+              <View style={Homestyles.eventDetailItem}>
                 <Ionicons name="calendar-outline" size={14} color="#64748b" />
-                <Text style={styles.eventDetailText}>{event.date} à {event.time}</Text>
+                <Text style={Homestyles.eventDetailText}>{event.date} à {event.time}</Text>
               </View>
-              <View style={styles.eventDetailItem}>
+              <View style={Homestyles.eventDetailItem}>
                 <Ionicons name="location-outline" size={14} color="#64748b" />
-                <Text style={styles.eventDetailText}>{event.location}</Text>
+                <Text style={Homestyles.eventDetailText}>{event.location}</Text>
               </View>
-              <View style={styles.eventDetailItem}>
+              <View style={Homestyles.eventDetailItem}>
                 <Ionicons name="people-outline" size={14} color="#64748b" />
-                <Text style={styles.eventDetailText}>{event.attendees} participants</Text>
+                <Text style={Homestyles.eventDetailText}>{event.attendees} participants</Text>
               </View>
             </View>
           </View>
-          <TouchableOpacity style={styles.eventActionButton}>
+          <TouchableOpacity style={Homestyles.eventActionButton}>
             <Ionicons name="chevron-forward" size={20} color="#667eea" />
           </TouchableOpacity>
         </TouchableOpacity>
@@ -547,26 +765,25 @@ const HomeScreen = () => {
   );
 
   const renderRecentActivity = () => (
-    <View style={styles.activityContainer}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>🔔 Activité récente</Text>
+    <View style={Homestyles.activityContainer}>
+      <View style={Homestyles.sectionHeader}>
+        <Text style={Homestyles.sectionTitle}>🔔 Activité récente</Text>
         <TouchableOpacity onPress={() => handleMenuPress('/screens/social/notifications')}>
-          <Text style={styles.seeAllText}>Voir tout</Text>
+          <Text style={Homestyles.seeAllText}>Voir tout</Text>
         </TouchableOpacity>
       </View>
-      
       {recentActivities.map((activity) => (
-        <TouchableOpacity key={activity.id} style={styles.activityItem}>
-          <Image source={{ uri: activity.avatar }} style={styles.activityAvatar} />
-          <View style={styles.activityContent}>
-            <Text style={styles.activityText}>
-              <Text style={styles.activityUser}>{activity.user}</Text>
+        <TouchableOpacity key={activity.id} style={Homestyles.activityItem}>
+          <Image source={{ uri: activity.avatar }} style={Homestyles.activityAvatar} />
+          <View style={Homestyles.activityContent}>
+            <Text style={Homestyles.activityText}>
+              <Text style={Homestyles.activityUser}>{activity.user}</Text>
               {' '}{activity.action}{' '}
-              <Text style={styles.activityEvent}>{activity.event}</Text>
+              <Text style={Homestyles.activityEvent}>{activity.event}</Text>
             </Text>
-            <Text style={styles.activityTime}>{activity.time}</Text>
+            <Text style={Homestyles.activityTime}>{activity.time}</Text>
           </View>
-          <View style={[styles.activityTypeIcon, { backgroundColor: getActivityColor(activity.type) }]}>
+          <View style={[Homestyles.activityTypeIcon, { backgroundColor: getActivityColor(activity.type) }]}>
             <Ionicons name={getActivityIcon(activity.type)} size={12} color="white" />
           </View>
         </TouchableOpacity>
@@ -575,91 +792,86 @@ const HomeScreen = () => {
   );
 
   const renderFriendSuggestions = () => (
-    <View style={styles.suggestionsContainer}>
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>👥 Suggestions d'amis</Text>
+    <View style={Homestyles.suggestionsContainer}>
+      <View style={Homestyles.sectionHeader}>
+        <Text style={Homestyles.sectionTitle}>👥 Suggestions d'amis</Text>
         <TouchableOpacity onPress={() => handleMenuPress('/screens/social/friends')}>
-          <Text style={styles.seeAllText}>Voir tout</Text>
+          <Text style={Homestyles.seeAllText}>Voir tout</Text>
         </TouchableOpacity>
       </View>
-      
       <FlatList
         horizontal
         showsHorizontalScrollIndicator={false}
         data={friendSuggestions}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
-          <View style={styles.suggestionCard}>
-            <Image source={{ uri: item.avatar }} style={styles.suggestionAvatar} />
-            <Text style={styles.suggestionName} numberOfLines={1}>{item.name}</Text>
-            <Text style={styles.suggestionConnection}>{item.mutualFriends} amis en commun</Text>
-            <View style={styles.suggestionActions}>
-              <TouchableOpacity style={styles.addFriendButton}>
+          <View style={Homestyles.suggestionCard}>
+            <Image source={{ uri: item.avatar }} style={Homestyles.suggestionAvatar} />
+            <Text style={Homestyles.suggestionName} numberOfLines={1}>{item.name}</Text>
+            <Text style={Homestyles.suggestionConnection}>{item.mutualFriends} amis en commun</Text>
+            <View style={Homestyles.suggestionActions}>
+              <TouchableOpacity style={Homestyles.addFriendButton}>
                 <Ionicons name="person-add" size={16} color="white" />
               </TouchableOpacity>
-              <TouchableOpacity style={styles.ignoreButton}>
+              <TouchableOpacity style={Homestyles.ignoreButton}>
                 <Ionicons name="close" size={16} color="#64748b" />
               </TouchableOpacity>
             </View>
           </View>
         )}
-        contentContainerStyle={styles.suggestionsList}
+        contentContainerStyle={Homestyles.suggestionsList}
       />
     </View>
   );
 
   const renderStatsCard = () => (
-    <View style={styles.statsContainer}>
-      <Text style={styles.sectionTitle}>📊 Vos statistiques</Text>
-      <View style={styles.statsGrid}>
-        <TouchableOpacity 
-          style={styles.statItem}
+    <View style={Homestyles.statsContainer}>
+      <Text style={Homestyles.sectionTitle}>📊 Vos statistiques</Text>
+      <View style={Homestyles.statsGrid}>
+        <TouchableOpacity
+          style={Homestyles.statItem}
           onPress={() => handleMenuPress('/screens/social/friends')}
         >
-          <View style={[styles.statIcon, { backgroundColor: '#667eea' }]}>
+          <View style={[Homestyles.statIcon, { backgroundColor: '#667eea' }]}>
             <Ionicons name="people" size={20} color="white" />
           </View>
-          <Text style={styles.statNumber}>42</Text>
-          <Text style={styles.statLabel}>Amis</Text>
+          <Text style={Homestyles.statNumber}>42</Text>
+          <Text style={Homestyles.statLabel}>Amis</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.statItem}
+        <TouchableOpacity
+          style={Homestyles.statItem}
           onPress={() => handleMenuPress('/screens/events/EventsListScreen')}
         >
-          <View style={[styles.statIcon, { backgroundColor: '#48bb78' }]}>
+          <View style={[Homestyles.statIcon, { backgroundColor: '#48bb78' }]}>
             <Ionicons name="calendar" size={20} color="white" />
           </View>
-          <Text style={styles.statNumber}>12</Text>
-          <Text style={styles.statLabel}>Événements</Text>
+          <Text style={Homestyles.statNumber}>12</Text>
+          <Text style={Homestyles.statLabel}>Événements</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.statItem}
+        <TouchableOpacity
+          style={Homestyles.statItem}
           onPress={() => handleMenuPress('/screens/memories/gallery')}
         >
-          <View style={[styles.statIcon, { backgroundColor: '#ed8936' }]}>
+          <View style={[Homestyles.statIcon, { backgroundColor: '#ed8936' }]}>
             <Ionicons name="images" size={20} color="white" />
           </View>
-          <Text style={styles.statNumber}>156</Text>
-          <Text style={styles.statLabel}>Photos</Text>
+          <Text style={Homestyles.statNumber}>156</Text>
+          <Text style={Homestyles.statLabel}>Photos</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.statItem}
+        <TouchableOpacity
+          style={Homestyles.statItem}
           onPress={() => handleMenuPress('/screens/ecommerce/wishlist')}
         >
-          <View style={[styles.statIcon, { backgroundColor: '#9f7aea' }]}>
+          <View style={[Homestyles.statIcon, { backgroundColor: '#9f7aea' }]}>
             <Ionicons name="gift" size={20} color="white" />
           </View>
-          <Text style={styles.statNumber}>8</Text>
-          <Text style={styles.statLabel}>Souhaits</Text>
+          <Text style={Homestyles.statNumber}>8</Text>
+          <Text style={Homestyles.statLabel}>Souhaits</Text>
         </TouchableOpacity>
       </View>
-      
-      <View style={styles.userPoints}>
+      <View style={Homestyles.userPoints}>
         <Ionicons name="trophy" size={16} color="#f59e0b" />
-        <Text style={styles.pointsText}>{user.points} points CelebConnect</Text>
+        <Text style={Homestyles.pointsText}>{user.points} points CelebConnect</Text>
       </View>
     </View>
   );
@@ -683,14 +895,13 @@ const HomeScreen = () => {
   };
 
   return (
-    <SafeAreaView style={styles.container}>
+    <SafeAreaView style={Homestyles.container}>
       {renderHeader()}
       {renderHorizontalMainMenu()}
-      
-      <ScrollView 
-        style={styles.scrollView}
+      <ScrollView
+        style={Homestyles.scrollView}
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={Homestyles.scrollContent}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
@@ -702,18 +913,15 @@ const HomeScreen = () => {
         {renderRecentActivity()}
         {renderFriendSuggestions()}
         {renderStatsCard()}
-        
-        {/* Espace supplémentaire en bas */}
         <View style={{ height: 30 }} />
       </ScrollView>
-
-      <TouchableOpacity 
-        style={styles.floatingButton}
+      <TouchableOpacity
+        style={Homestyles.floatingButton}
         onPress={() => handleMenuPress('/screens/events/createevent')}
       >
         <LinearGradient
           colors={['#667eea', '#764ba2']}
-          style={styles.floatingButtonGradient}
+          style={Homestyles.floatingButtonGradient}
         >
           <Ionicons name="add" size={28} color="white" />
         </LinearGradient>
@@ -721,537 +929,5 @@ const HomeScreen = () => {
     </SafeAreaView>
   );
 };
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f8fafc',
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 45,
-    backgroundColor: 'white',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  avatarContainer: {
-    position: 'relative',
-    marginRight: 12,
-  },
-  userAvatar: {
-    width: 45,
-    height: 45,
-    borderRadius: 22.5,
-  },
-  statusIndicator: {
-    position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#22c55e',
-    borderWidth: 2,
-    borderColor: 'white',
-  },
-  userInfo: {
-    justifyContent: 'center',
-  },
-  greeting: {
-    fontSize: 14,
-    color: '#64748b',
-  },
-  userName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1e293b',
-  },
-  userLevel: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 2,
-  },
-  userLevelText: {
-    fontSize: 11,
-    color: '#f59e0b',
-    marginLeft: 4,
-    fontWeight: '600',
-  },
-  headerRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  headerIcon: {
-    marginLeft: 15,
-    position: 'relative',
-  },
-  notificationBadge: {
-    position: 'absolute',
-    top: -8,
-    right: -8,
-    backgroundColor: '#ef4444',
-    borderRadius: 10,
-    width: 20,
-    height: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  badgeText: {
-    color: 'white',
-    fontSize: 12,
-    fontWeight: 'bold',
-  },
-  scrollView: {
-    flex: 1,
-  },
-  scrollContent: {
-    paddingBottom: 100,
-  },
-  horizontalMenuContainer: {
-    backgroundColor: 'white',
-    paddingVertical: 15,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-  },
-  horizontalMenuScroll: {
-    paddingHorizontal: 15,
-  },
-  horizontalMenuItem: {
-    alignItems: 'center',
-    marginRight: 20,
-    width: 70,
-  },
-  horizontalMenuIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  horizontalMenuText: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: '#475569',
-    textAlign: 'center',
-  },
-  todayHighlight: {
-    marginHorizontal: 20,
-    marginTop: 20,
-    borderRadius: 12,
-    overflow: 'hidden',
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-  },
-  todayGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 20,
-  },
-  todayContent: {
-    flex: 1,
-  },
-  todayTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: 'white',
-    marginBottom: 8,
-  },
-  todayItem: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.9)',
-    marginBottom: 4,
-  },
-todayButton: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  quickActionsContainer: {
-    marginHorizontal: 20,
-    marginTop: 20,
-  },
-  quickActionsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginTop: 15,
-  },
-  quickActionItem: {
-    width: (width - 60) / 2,
-    backgroundColor: 'white',
-    borderRadius: 12,
-    paddingVertical: 15,
-    paddingHorizontal: 15,
-    marginBottom: 15,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  quickActionIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  quickActionText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#334155',
-    textAlign: 'center',
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1e293b',
-    marginBottom: 5,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 15,
-  },
-  seeAllText: {
-    fontSize: 14,
-    color: '#667eea',
-    fontWeight: '600',
-  },
-  birthdaysContainer: {
-    marginHorizontal: 20,
-    marginTop: 25,
-  },
-  birthdaysList: {
-    paddingLeft: 5,
-  },
-  birthdayCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 15,
-    marginRight: 15,
-    width: 130,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  birthdayCardToday: {
-    borderWidth: 2,
-    borderColor: '#667eea',
-    backgroundColor: '#f8fafc',
-  },
-  birthdayImageContainer: {
-    position: 'relative',
-    marginBottom: 10,
-  },
-  birthdayImage: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-  },
-  todayBadge: {
-    position: 'absolute',
-    top: -5,
-    right: -5,
-    backgroundColor: '#667eea',
-    borderRadius: 12,
-    width: 24,
-    height: 24,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  todayBadgeText: {
-    fontSize: 12,
-  },
-  daysLeftBadge: {
-    position: 'absolute',
-    top: -5,
-    right: -5,
-    backgroundColor: '#ef4444',
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  daysLeftText: {
-    color: 'white',
-    fontSize: 10,
-    fontWeight: 'bold',
-  },
-  birthdayName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1e293b',
-    textAlign: 'center',
-    marginBottom: 2,
-  },
-  birthdayAge: {
-    fontSize: 12,
-    color: '#64748b',
-    marginBottom: 2,
-  },
-  birthdayDate: {
-    fontSize: 11,
-    color: '#94a3b8',
-  },
-  eventsContainer: {
-    marginHorizontal: 20,
-    marginTop: 25,
-  },
-  eventCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    flexDirection: 'row',
-    marginBottom: 15,
-    overflow: 'hidden',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  eventImage: {
-    width: 80,
-    height: 80,
-  },
-  eventInfo: {
-    flex: 1,
-    padding: 15,
-  },
-  eventTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1e293b',
-    marginBottom: 8,
-  },
-  eventDetails: {
-    gap: 4,
-  },
-  eventDetailItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 2,
-  },
-  eventDetailText: {
-    fontSize: 12,
-    color: '#64748b',
-    marginLeft: 6,
-  },
-  eventActionButton: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 15,
-  },
-  activityContainer: {
-    marginHorizontal: 20,
-    marginTop: 25,
-  },
-  activityItem: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 15,
-    marginBottom: 10,
-    elevation: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 1,
-  },
-  activityAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    marginRight: 12,
-  },
-  activityContent: {
-    flex: 1,
-  },
-  activityText: {
-    fontSize: 14,
-    color: '#334155',
-    lineHeight: 18,
-  },
-  activityUser: {
-    fontWeight: '600',
-    color: '#1e293b',
-  },
-  activityEvent: {
-    fontWeight: '600',
-    color: '#667eea',
-  },
-  activityTime: {
-    fontSize: 12,
-    color: '#94a3b8',
-    marginTop: 2,
-  },
-  activityTypeIcon: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  suggestionsContainer: {
-    marginHorizontal: 20,
-    marginTop: 25,
-  },
-  suggestionsList: {
-    paddingLeft: 5,
-  },
-  suggestionCard: {
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 15,
-    marginRight: 15,
-    width: 140,
-    alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  suggestionAvatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    marginBottom: 10,
-  },
-  suggestionName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1e293b',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  suggestionConnection: {
-    fontSize: 11,
-    color: '#64748b',
-    textAlign: 'center',
-    marginBottom: 12,
-  },
-  suggestionActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  addFriendButton: {
-    backgroundColor: '#667eea',
-    borderRadius: 16,
-    width: 32,
-    height: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  ignoreButton: {
-    backgroundColor: '#f1f5f9',
-    borderRadius: 16,
-    width: 32,
-    height: 32,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  statsContainer: {
-    marginHorizontal: 20,
-    marginTop: 25,
-    backgroundColor: 'white',
-    borderRadius: 12,
-    padding: 20,
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-  },
-  statsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    marginTop: 15,
-  },
-  statItem: {
-    width: (width - 80) / 4,
-    alignItems: 'center',
-    marginBottom: 15,
-  },
-  statIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  statNumber: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#1e293b',
-    marginBottom: 2,
-  },
-  statLabel: {
-    fontSize: 11,
-    color: '#64748b',
-    textAlign: 'center',
-  },
-  userPoints: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginTop: 10,
-    paddingTop: 15,
-    borderTopWidth: 1,
-    borderTopColor: '#e2e8f0',
-  },
-  pointsText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#f59e0b',
-    marginLeft: 8,
-  },
-  floatingButton: {
-    position: 'absolute',
-    bottom: 30,
-    right: 20,
-    borderRadius: 30,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-  },
-  floatingButtonGradient: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-});
 
 export default HomeScreen;

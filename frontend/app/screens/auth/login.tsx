@@ -15,6 +15,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { login } from '../../../services/auth';
+import { getProfile } from '../../../services/profile';
+import { STORAGE_KEYS } from '../../../constants/storageKeys';
+import { setItem } from '../../../utils/storage';
+
 
 const { width, height } = Dimensions.get('window');
 
@@ -26,87 +30,202 @@ export default function LoginScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [loginMethod, setLoginMethod] = useState('email'); // 'email' or 'phone'
 
-  const handleLogin = async () => {
-    // Validation des champs
-    const identifier = loginMethod === 'email' ? email.trim() : phone.trim();
-    
-    if (!identifier || !password) {
-      Alert.alert('Erreur', 'Veuillez remplir tous les champs');
-      return;
-    }
+  // Fonction de validation email renforcée
+  const validateEmail = (email) => {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  };
 
-    // Validation email basique
-    if (loginMethod === 'email' && !email.includes('@')) {
-      Alert.alert('Erreur', 'Veuillez entrer une adresse email valide');
-      return;
-    }
+  // Fonction de validation téléphone renforcée
+  const validatePhone = (phone) => {
+    // Nettoyer le numéro (enlever espaces, tirets, etc.)
+    const cleanPhone = phone.replace(/[\s\-\(\)]/g, '');
+    // Vérifier format international ou local (8-15 chiffres)
+    const phoneRegex = /^(\+?[1-9]\d{7,14})$/;
+    return phoneRegex.test(cleanPhone) && cleanPhone.length >= 8;
+  };
 
-    // Validation téléphone basique
-    if (loginMethod === 'phone' && phone.length < 8) {
-      Alert.alert('Erreur', 'Veuillez entrer un numéro de téléphone valide');
-      return;
-    }
+  // Fonction de nettoyage et formatage des données
+  const sanitizeInput = (input) => {
+    return input.trim().toLowerCase();
+  };
 
-    setIsLoading(true);
-    
+  const formatPhoneNumber = (phone) => {
+    // Nettoyer et formater le numéro de téléphone
+    return phone.replace(/[\s\-\(\)]/g, '');
+  };
+
+  // Méthode de debug pour vérifier le token
+  const debugToken = async () => {
     try {
-      const response = await login(identifier, password);
-      
-      // Vérifier la structure de la réponse
-      if (response && response.access_token) {
-        // Stocker le token et les informations utilisateur
-        await AsyncStorage.setItem('userToken', response.access_token);
-        await AsyncStorage.setItem('userInfo', JSON.stringify(response.user || {}));
-        
-        // Afficher un message de succès
-        Alert.alert(
-          'Connexion réussie', 
-          'Bienvenue !',
-          [
-            {
-              text: 'OK',
-              onPress: () => {
-                // Redirection vers l'écran d'accueil après connexion réussie
-                router.replace('/screens/social/home');
-              }
-            }
-          ]
-        );
-      } else {
-        Alert.alert('Erreur', 'Réponse du serveur invalide');
-      }
+      console.log('🔍 Clé utilisée:', STORAGE_KEYS.AUTH_TOKEN);
+      const token = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+      console.log('🔍 Token trouvé:', token ? 'OUI' : 'NON');
+      console.log('🔍 Token length:', token ? token.length : 0);
+      console.log('🔍 Token preview:', token ? token.substring(0, 20) + '...' : 'null');
+      return token;
     } catch (error) {
-      console.error('Erreur de connexion:', error);
-      
-      // Gestion spécifique des différents types d'erreurs
-      let errorMessage = 'Une erreur est survenue lors de la connexion';
-      
-      if (error.status === 401) {
-        // Erreur d'authentification (identifiants incorrects)
-        errorMessage = error.message || 'Identifiant ou mot de passe incorrect';
-      } else if (error.status === 0) {
-        // Erreur réseau
-        errorMessage = error.message || 'Vérifiez votre connexion internet';
-      } else if (error.status === 500) {
-        // Erreur serveur
-        errorMessage = 'Erreur du serveur. Veuillez réessayer plus tard.';
-      } else if (error.message) {
-        // Autres erreurs avec message
-        errorMessage = error.message;
-      }
-      
-      Alert.alert('Erreur de connexion', errorMessage);
-    } finally {
-      setIsLoading(false);
+      console.error('🔍 Erreur debug token:', error);
+      return null;
     }
   };
 
-  const handleSocialLogin = (platform) => {
+
+  
+const handleLogin = async () => {
+  const identifier = loginMethod === 'email' 
+    ? sanitizeInput(email) 
+    : formatPhoneNumber(phone.trim());
+
+  if (!identifier || !password) {
+    Alert.alert('Erreur de validation', 'Veuillez remplir tous les champs obligatoires');
+    return;
+  }
+
+  if (password.length < 6) {
+    Alert.alert('Erreur de validation', 'Le mot de passe doit contenir au moins 6 caractères');
+    return;
+  }
+
+  if (loginMethod === 'email' && !validateEmail(identifier)) {
+    Alert.alert('Erreur de validation', 'Veuillez entrer une adresse email valide');
+    return;
+  }
+
+  if (loginMethod === 'phone' && !validatePhone(identifier)) {
+    Alert.alert('Erreur de validation', 'Veuillez entrer un numéro de téléphone valide');
+    return;
+  }
+
+  setIsLoading(true);
+  let loginSuccessful = false;
+
+  try {
+    const loginData = {
+      identifier,
+      password,
+      loginType: loginMethod,
+      ...(loginMethod === 'email' ? { email: identifier } : { phone: identifier }),
+    };
+
+    const response = await login(loginData.identifier, loginData.password, loginData.loginType);
+
+    if (!response || !response.access_token || !response.user) {
+      throw new Error('Réponse du serveur invalide ou incomplète');
+    }
+
+    const userFromResponse = response.user;
+    let identifierMatch = false;
+
+    if (loginMethod === 'email') {
+      identifierMatch = userFromResponse.email && sanitizeInput(userFromResponse.email) === identifier;
+    } else {
+      identifierMatch = formatPhoneNumber(userFromResponse.phone || '') === identifier;
+    }
+
+    if (!identifierMatch) {
+      throw new Error('Erreur de sécurité: les informations de connexion ne correspondent pas');
+    }
+
+    loginSuccessful = true;
+
+    try {
+      await setItem('AUTH_TOKEN', response.access_token);
+      await setItem('USER_INFO', userFromResponse);
+      await setItem('LOGIN_METHOD', loginMethod);
+      await setItem('USER_IDENTIFIER', identifier);
+
+      if (userFromResponse.email) await setItem('USER_EMAIL', sanitizeInput(userFromResponse.email));
+      if (userFromResponse.phone) await setItem('USER_PHONE', formatPhoneNumber(userFromResponse.phone));
+    } catch (storageError) {
+      console.warn('⚠️ Problème lors du stockage des données utilisateur', storageError);
+    }
+
+    console.log('Authentification réussie, récupération du profil...');
+    await debugToken();
+
+    try {
+      const profileIdentifier = loginMethod === 'email' ? userFromResponse.email : userFromResponse.phone;
+      if (!profileIdentifier) throw new Error(`Identifiant ${loginMethod} non disponible`);
+
+      const encodedIdentifier = encodeURIComponent(profileIdentifier);
+      const userProfile = await getProfile(encodedIdentifier, loginMethod);
+
+      if (userProfile) {
+        await setItem('USER_PROFILE', userProfile);
+        console.log('Profil utilisateur récupéré avec succès');
+      }
+
+    } catch (profileError) {
+      console.log('Erreur lors de la récupération du profil:', profileError.message || profileError);
+    }
+
     Alert.alert(
-      'Connexion sociale',
-      `La connexion via ${platform} sera bientôt disponible`,
-      [{ text: 'OK' }]
+      'Connexion réussie',
+      userFromResponse.name ? `Bienvenue ${userFromResponse.name} !` : 'Bienvenue !',
+      [{ text: 'OK', onPress: () => router.replace('/screens/social/home') }]
     );
+
+  } catch (error: any) {
+    console.error('Erreur de connexion:', error);
+
+    if (!loginSuccessful) {
+      const keysToRemove: StorageKey[] = [
+        'AUTH_TOKEN', 'USER_INFO', 'USER_PROFILE',
+        'USER_IDENTIFIER', 'USER_EMAIL', 'USER_PHONE', 'LOGIN_METHOD'
+      ];
+
+      try {
+        await AsyncStorage.multiRemove(keysToRemove.map(k => STORAGE_KEYS[k]));
+      } catch (cleanupError) {
+        console.warn('Erreur nettoyage stockage:', cleanupError);
+      }
+    }
+
+    let errorMessage = 'Une erreur est survenue lors de la connexion';
+
+    const status = error.status || error.response?.status;
+
+    if (error.message?.includes('sécurité')) {
+      errorMessage = 'Erreur de sécurité détectée. Veuillez réessayer.';
+    } else if (status === 401) {
+      errorMessage = loginMethod === 'email' 
+        ? 'Email ou mot de passe incorrect' 
+        : 'Numéro de téléphone ou mot de passe incorrect';
+    } else if (status === 404) {
+      errorMessage = loginMethod === 'email'
+        ? 'Aucun compte associé à cette adresse email'
+        : 'Aucun compte associé à ce numéro de téléphone';
+    } else if (status === 422) {
+      errorMessage = 'Données invalides. Vérifiez vos informations.';
+    } else if (status === 0 || error.code === 'NETWORK_ERROR') {
+      errorMessage = 'Erreur réseau. Vérifiez votre connexion internet.';
+    } else if (status === 500) {
+      errorMessage = 'Erreur du serveur. Veuillez réessayer plus tard.';
+    } else if (status === 429) {
+      errorMessage = 'Trop de tentatives. Patientez avant de réessayer.';
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
+
+    Alert.alert('Erreur de connexion', errorMessage);
+
+  } finally {
+    await setIsLoading(false);
+  }
+};
+
+
+  // Gestionnaire de changement de méthode de connexion avec nettoyage
+  const handleMethodChange = (method) => {
+    setLoginMethod(method);
+    if (method === 'email') {
+      setPhone(''); // Vider le téléphone quand on passe à email
+    } else {
+      setEmail(''); // Vider l'email quand on passe au téléphone
+    }
+    // Réinitialiser les erreurs
+    console.log(`Méthode de connexion changée vers: ${method}`);
   };
 
   return (
@@ -146,10 +265,8 @@ export default function LoginScreen() {
                   styles.methodButton,
                   loginMethod === 'email' && styles.methodButtonActive
                 ]}
-                onPress={() => {
-                  setLoginMethod('email');
-                  setPhone(''); // Clear phone when switching
-                }}
+                onPress={() => handleMethodChange('email')}
+                disabled={isLoading}
               >
                 <Ionicons name="mail" size={20} color={loginMethod === 'email' ? '#667eea' : '#A0AEC0'} />
                 <Text style={[
@@ -165,10 +282,8 @@ export default function LoginScreen() {
                   styles.methodButton,
                   loginMethod === 'phone' && styles.methodButtonActive
                 ]}
-                onPress={() => {
-                  setLoginMethod('phone');
-                  setEmail(''); // Clear email when switching
-                }}
+                onPress={() => handleMethodChange('phone')}
+                disabled={isLoading}
               >
                 <Ionicons name="phone-portrait" size={20} color={loginMethod === 'phone' ? '#667eea' : '#A0AEC0'} />
                 <Text style={[
@@ -188,7 +303,7 @@ export default function LoginScreen() {
                   <Ionicons name="mail" size={20} color="#A0AEC0" style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
-                    placeholder="Adresse email"
+                    placeholder="Adresse email (ex: user@domain.com)"
                     placeholderTextColor="#718096"
                     value={email}
                     onChangeText={setEmail}
@@ -196,6 +311,7 @@ export default function LoginScreen() {
                     autoCapitalize="none"
                     autoCorrect={false}
                     editable={!isLoading}
+                    maxLength={255}
                   />
                 </View>
               ) : (
@@ -203,7 +319,7 @@ export default function LoginScreen() {
                   <Ionicons name="phone-portrait" size={20} color="#A0AEC0" style={styles.inputIcon} />
                   <TextInput
                     style={styles.input}
-                    placeholder="Numéro de téléphone"
+                    placeholder="Numéro de téléphone (+226XXXXXXXX)"
                     placeholderTextColor="#718096"
                     value={phone}
                     onChangeText={setPhone}
@@ -211,6 +327,7 @@ export default function LoginScreen() {
                     autoCapitalize="none"
                     autoCorrect={false}
                     editable={!isLoading}
+                    maxLength={20}
                   />
                 </View>
               )}
@@ -220,13 +337,14 @@ export default function LoginScreen() {
                 <Ionicons name="lock-closed" size={20} color="#A0AEC0" style={styles.inputIcon} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Mot de passe"
+                  placeholder="Mot de passe (min. 6 caractères)"
                   placeholderTextColor="#718096"
                   value={password}
                   onChangeText={setPassword}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
                   editable={!isLoading}
+                  maxLength={255}
                 />
                 <TouchableOpacity
                   style={styles.eyeIcon}
@@ -267,7 +385,9 @@ export default function LoginScreen() {
                       <Text style={styles.loginButtonText}>Connexion en cours...</Text>
                     </View>
                   ) : (
-                    <Text style={styles.loginButtonText}>Se connecter</Text>
+                    <Text style={styles.loginButtonText}>
+                      Se connecter par {loginMethod === 'email' ? 'email' : 'téléphone'}
+                    </Text>
                   )}
                 </LinearGradient>
               </TouchableOpacity>
@@ -322,7 +442,6 @@ export default function LoginScreen() {
     </View>
   );
 }
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,

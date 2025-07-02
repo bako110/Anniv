@@ -20,6 +20,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import memoryService from '../../../services/memorie'; // Assurez-vous que le chemin est correct
 import { theme } from '../../../constants/theme'; // Supposons que vous ayez un fichier theme.js
 
 const AddMemoryScreen = () => {
@@ -105,21 +106,35 @@ const AddMemoryScreen = () => {
     setIsLoading(true);
 
     try {
-      // Simuler un appel API
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      
-      // Réinitialiser le formulaire après soumission réussie
-      setTitle('');
-      setDescription('');
-      setSelectedImages([]);
-      setDate(new Date());
-      
-      Alert.alert('Succès', 'Votre souvenir a été enregistré avec succès!', [
-        { text: 'OK', onPress: () => router.back() }
-      ]);
+      // Préparer les données du souvenir
+      const memoryData = {
+        title,
+        description,
+        date,
+        selectedImages,
+        memoryType
+      };
+
+      // Sauvegarder le souvenir avec le service
+      const result = await memoryService.saveMemory(memoryData);
+
+      if (result.success) {
+        // Réinitialiser le formulaire après soumission réussie
+        setTitle('');
+        setDescription('');
+        setSelectedImages([]);
+        setDate(new Date());
+        setMemoryType('vacation');
+        
+        Alert.alert('Succès', result.message, [
+          { text: 'OK', onPress: () => router.back() }
+        ]);
+      } else {
+        Alert.alert('Erreur', result.message || 'Une erreur est survenue lors de l\'enregistrement.');
+      }
     } catch (error) {
       console.error('Error saving memory:', error);
-      Alert.alert('Erreur', 'Une erreur est survenue lors de l\'enregistrement de votre souvenir.');
+      Alert.alert('Erreur', 'Une erreur inattendue est survenue lors de l\'enregistrement de votre souvenir.');
     } finally {
       setIsLoading(false);
     }
