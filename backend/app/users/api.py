@@ -5,7 +5,8 @@ from pathlib import Path
 import aiofiles
 import logging
 import urllib.parse
-from datetime import datetime, timedelta
+import uuid  # ← AJOUT DE L'IMPORT MANQUANT
+from datetime import datetime, timedelta, timezone
 from bson import ObjectId
 
 from app.users import services
@@ -13,7 +14,7 @@ from app.users.models import UserProfile, UserProfileUpdate
 from app.auth.dependencies import get_current_user  
 from app.users.services import format_profile_for_frontend
 from fastapi.security import HTTPBearer
-from fastapi import Security
+from fastapi import Security, Header
 from app.db.mongo import profiles_collection
 
 
@@ -130,8 +131,6 @@ async def get_profile(identifier: str):
         logger.error(f"Erreur récupération profil: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-
-from fastapi import Request
 
 @router.put("/profile/{identifier}", response_model=UserProfile)
 async def update_profile(identifier: str, updates: UserProfileUpdate, request: Request):
@@ -258,10 +257,9 @@ async def change_cover(identifier: str, file: UploadFile = File(...)):
         logger.error(f"Erreur changement couverture: {e}")
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
 
-        from fastapi import APIRouter, Depends
 
 # ➤ Met à jour le statut en ligne de l'utilisateur
-@router.post("/onligne")
+@router.post("/online")
 async def ping(user: UserProfile = Depends(get_current_user)):
     """
     Marque l'utilisateur comme en ligne et met à jour le champ `last_seen`
@@ -280,6 +278,7 @@ async def ping(user: UserProfile = Depends(get_current_user)):
         return {"status": "online", "user_id": user.user_id}
     else:
         return {"status": "not_updated", "user_id": user.user_id}
+
 
 # ➤ Met à jour les utilisateurs inactifs (déconnecte après 3 minutes)
 async def mark_users_offline_if_inactive():
@@ -311,7 +310,7 @@ async def get_user_profile(user_id: str, current_user=Depends(get_current_user))
         if not user:
             raise HTTPException(status_code=404, detail="Utilisateur non trouvé")
 
-        # Convertir l’ID Mongo en string pour le frontend
+        # Convertir l'ID Mongo en string pour le frontend
         user["_id"] = str(user["_id"])
 
         # Incrément des vues
@@ -399,6 +398,7 @@ async def follow_user(target_id: str, current_user=Depends(get_current_user)):
         logger.error(f"Erreur lors du suivi de l'utilisateur {target_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Erreur interne du serveur.")
 
+
 @router.post("/{target_id}/unfollow")
 async def unfollow_user(target_id: str, current_user=Depends(get_current_user)):
     try:
@@ -431,35 +431,7 @@ async def unfollow_user(target_id: str, current_user=Depends(get_current_user)):
     except Exception as e:
         logger.error(f"Erreur dans unfollow_user: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Erreur interne du serveur")
-# -----------------------------------
-# Gestion du statut online / last_seen
-# -----------------------------------
-@router.post("/online")
-async def ping(user: UserProfile = Depends(get_current_user)):
-    """
-    Met à jour l'utilisateur comme en ligne et last_seen à maintenant
-    """
-    result = await profiles_collection.update_one(
-        {"user_id": user.user_id},
-        {"$set": {"online_status": True, "last_seen": datetime.utcnow()}}
-    )
-    if result.modified_count == 1:
-        return {"status": "online", "user_id": user.user_id}
-    return {"status": "not_updated", "user_id": user.user_id}
 
-async def mark_users_offline_if_inactive():
-    """
-    Marque offline tous les users inactifs depuis > 3 minutes
-    """
-    timeout_limit = datetime.utcnow() - timedelta(minutes=3)
-    result = await profiles_collection.update_many(
-        {"last_seen": {"$lt": timeout_limit}},
-        {"$set": {"online_status": False}}
-    )
-    logger.info(f"Users offline updated: {result.modified_count}")
-
-from datetime import datetime, timezone
-from fastapi import Header, HTTPException
 
 @router.get("/{user_id}/status")
 async def get_user_status(
@@ -502,21 +474,25 @@ async def get_user_status(
     # 4. Détermination dynamique du statut
     is_online = False
     if last_activity:
+        # Solution 1: Ensure last_activity is timezone-aware
+        if last_activity.tzinfo is None:
+            # Assume UTC if no timezone info
+            last_activity = last_activity.replace(tzinfo=timezone.utc)
+        elif last_activity.tzinfo != timezone.utc:
+            # Convert to UTC if different timezone
+            last_activity = last_activity.astimezone(timezone.utc)
+        
         time_diff = (now - last_activity).total_seconds()
         is_online = time_diff < 300  # 5 minutes de tolérance
 
     # 5. Réponse avec headers pour éviter le caching
-    headers = {
-        "Cache-Control": "no-store, max-age=0",
-        "X-Status-Freshness": now.isoformat()
-    }
-
     return {
         "online_status": is_online or profile.get("online_status", False),
         "last_seen": last_activity.isoformat() if last_activity else None,
         "computed_at": now.isoformat(),
         "is_realtime": True
-    }, headers
+    }
+
 
 @router.post("/{user_id}/status")
 async def update_user_status(
@@ -542,16 +518,26 @@ async def update_user_status(
         "online_status": online_status
     }
 
-    # Cas où l’utilisateur est mis hors ligne
+    # Cas où l'utilisateur est mis hors ligne
     if online_status is False:
-        update_data["last_seen"] = datetime.utcnow()
+        # Use timezone-aware datetime for consistency
+        update_data["last_seen"] = datetime.now(timezone.utc)
+        update_data["last_activity"] = datetime.now(timezone.utc)
 
-    # Cas où l’utilisateur est mis en ligne (optionnel : accepte une date envoyée)
+    # Cas où l'utilisateur est mis en ligne (optionnel : accepte une date envoyée)
     elif status.get("last_seen"):
         try:
-            update_data["last_seen"] = datetime.fromisoformat(status["last_seen"])
+            last_seen_dt = datetime.fromisoformat(status["last_seen"])
+            # Ensure timezone awareness
+            if last_seen_dt.tzinfo is None:
+                last_seen_dt = last_seen_dt.replace(tzinfo=timezone.utc)
+            update_data["last_seen"] = last_seen_dt
+            update_data["last_activity"] = last_seen_dt
         except Exception:
             raise HTTPException(status_code=400, detail="Format de date invalide")
+    else:
+        # User is online, update last_activity
+        update_data["last_activity"] = datetime.now(timezone.utc)
 
     result = await profiles_collection.update_one(query, {"$set": update_data})
 
@@ -561,5 +547,17 @@ async def update_user_status(
     return {
         "message": "Statut mis à jour",
         "online_status": online_status,
-        "last_seen": update_data.get("last_seen")
+        "last_seen": update_data.get("last_seen").isoformat() if update_data.get("last_seen") else None
     }
+
+
+async def mark_users_offline_if_inactive():
+    """
+    Marque offline tous les users inactifs depuis > 3 minutes
+    """
+    timeout_limit = datetime.utcnow() - timedelta(minutes=3)
+    result = await profiles_collection.update_many(
+        {"last_seen": {"$lt": timeout_limit}},
+        {"$set": {"online_status": False}}
+    )
+    logger.info(f"Users offline updated: {result.modified_count}")

@@ -3,9 +3,9 @@ env/
 venv/
 .env/
 
-
+frontend/package-lock.json
 env/
-
+frontend/package.json
 # Ignorer dossiers d’environnements virtuels dans backend et frontend
 backend/env/
 backend/venv/

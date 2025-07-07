@@ -15,6 +15,7 @@ import {
   Platform,
   Dimensions,
   Modal,
+  StyleSheet,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
@@ -44,7 +45,6 @@ const EventListScreen = () => {
   const [commentingEventId, setCommentingEventId] = useState(null);
   const [onlineUsers, setOnlineUsers] = useState(new Set());
   const [expandedDescriptions, setExpandedDescriptions] = useState({});
-  // Nouvel état pour la modale image
   const [modalImageUri, setModalImageUri] = useState(null);
 
   useEffect(() => {
@@ -134,7 +134,6 @@ const EventListScreen = () => {
     );
   };
 
-
   const handleGoing = (eventId) => {
     setEvents(prevEvents =>
       prevEvents.map(event =>
@@ -166,10 +165,10 @@ const EventListScreen = () => {
     setCommentingEventId(eventId);
   };
 
-  // Fonctions pour gérer la modale image
   const openImageModal = (imageUri) => {
     setModalImageUri(imageUri);
   };
+
   const closeImageModal = () => {
     setModalImageUri(null);
   };
@@ -267,7 +266,7 @@ const EventListScreen = () => {
       </View>
       <TouchableOpacity
         style={styles.eventContent}
-        onPress={() => router.push(`/screens/events/eventdetail?eventId=${item.id}`)}
+        // onPress={() => router.push(`/screens/events/eventdetail?eventId=${item.id}`)}
       >
         <Text style={styles.eventTitle}>{item.title}</Text>
         <Text style={styles.eventDescription} numberOfLines={expandedDescriptions[item.id] ? 0 : 2}>
@@ -400,7 +399,6 @@ const EventListScreen = () => {
           />
         )}
 
-        {/* MODALE IMAGE PLEIN ECRAN */}
         <Modal
           visible={modalImageUri !== null}
           transparent={true}
@@ -408,18 +406,13 @@ const EventListScreen = () => {
           onRequestClose={closeImageModal}
         >
           <TouchableOpacity
-            style={{
-              flex: 1,
-              backgroundColor: 'rgba(0,0,0,0.9)',
-              justifyContent: 'center',
-              alignItems: 'center',
-            }}
+            style={styles.modalOverlay}
             activeOpacity={1}
             onPress={closeImageModal}
           >
             <Image
               source={{ uri: modalImageUri }}
-              style={{ width: '90%', height: '70%', borderRadius: 12 }}
+              style={styles.modalImage}
               resizeMode="contain"
             />
           </TouchableOpacity>
@@ -427,9 +420,9 @@ const EventListScreen = () => {
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
-} 
+}
 
-const styles = {
+const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8fafc',
@@ -519,6 +512,7 @@ const styles = {
   organizerInfo: {
     flexDirection: 'row',
     alignItems: 'center',
+    flex: 1,
   },
   organizerAvatar: {
     width: 42,
@@ -546,7 +540,8 @@ const styles = {
     marginTop: 2,
   },
   moreButton: {
-    padding: 4,
+    padding: 8,
+    marginLeft: -30,
   },
   eventContent: {
     paddingHorizontal: 16,
@@ -563,7 +558,7 @@ const styles = {
     color: '#475569',
     lineHeight: 20,
     marginBottom: 12,
-    fontFamily: 'Roboto', // Utilisez une police plus jolie si disponible
+    fontFamily: 'Roboto',
   },
   seeMoreText: {
     color: '#667eea',
@@ -708,6 +703,17 @@ const styles = {
     backgroundColor: 'green',
     marginLeft: 5,
   },
-};
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalImage: {
+    width: '90%',
+    height: '70%',
+    borderRadius: 12,
+  },
+});
 
 export default EventListScreen;

@@ -18,110 +18,92 @@ import {
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons, MaterialIcons, Feather } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { chatService } from '@/services/chat';
 
 const { width, height } = Dimensions.get('window');
 
-// Données d'exemple pour les messages
-const messagesData = {
-  '1': [
-    {
-      id: 'm1',
-      text: 'Salut ! Tu viens à la fête de Julie ce soir ?',
-      senderId: 'user1',
-      timestamp: '14:30',
-      isRead: true,
-      type: 'text',
-    },
-    {
-      id: 'm2',
-      text: 'Oui bien sûr ! À quelle heure ça commence ?',
-      senderId: 'me',
-      timestamp: '14:32',
-      isRead: true,
-      type: 'text',
-    },
-    {
-      id: 'm3',
-      text: 'Vers 19h chez elle. Tu peux amener quelque chose ?',
-      senderId: 'user1',
-      timestamp: '14:35',
-      isRead: true,
-      type: 'text',
-    },
-    {
-      id: 'm4',
-      text: 'Je peux apporter des boissons 🥤',
-      senderId: 'me',
-      timestamp: '14:37',
-      isRead: true,
-      type: 'text',
-    },
-    {
-      id: 'm5',
-      text: 'Parfait ! On se voit là-bas alors 😊',
-      senderId: 'user1',
-      timestamp: '14:40',
-      isRead: false,
-      type: 'text',
-    }
-  ]
-};
+export const STORAGE_KEYS = {
+  AUTH_TOKEN: 'userToken',
+  USER_INFO: 'userInfo',
+  LOGIN_METHOD: 'loginMethod',
+  USER_PROFILE: 'userProfile',
+  USER_IDENTIFIER: 'userIdentifier',
+  USER_EMAIL: 'userEmail',
+  USER_PHONE: 'userPhone',
+  PENDING_EVENTS: '@pending_events',
+  CACHED_EVENTS: '@cached_events',
+  USER_ID: 'userId',
+} as const;
 
-// Données des participants
-const participantsData = {
-  'user1': {
-    id: 'user1',
-    name: 'Marie Dubois',
-    avatar: 'https://images.unsplash.com/photo-1494790108755-2616b612b786?w=80&h=80&fit=crop&crop=face',
-    isOnline: true,
-    lastSeen: null,
-    phone: '+33 6 12 34 56 78',
-  },
-  'user2': {
-    id: 'user2',
-    name: 'Pierre Martin',
-    avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=80&h=80&fit=crop&crop=face',
-    isOnline: false,
-    lastSeen: '2h',
-    phone: '+33 6 98 76 54 32',
-  }
-};
+export type StorageKey = keyof typeof STORAGE_KEYS;
 
 const ChatScreen = () => {
   const { conversationId } = useLocalSearchParams();
-  const [messages, setMessages] = useState(messagesData[conversationId] || []);
+  const [messages, setMessages] = useState([]);
   const [inputText, setInputText] = useState('');
-  const [participant, setParticipant] = useState(participantsData['user1']);
+  const [participant, setParticipant] = useState(null);
   const [isTyping, setIsTyping] = useState(false);
   const [selectedMessages, setSelectedMessages] = useState(new Set());
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [showAttachmentModal, setShowAttachmentModal] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
-  
+
   const flatListRef = useRef(null);
   const inputRef = useRef(null);
   const recordingAnimation = useRef(new Animated.Value(0)).current;
-  const typingTimeout = useRef(null);
 
   useEffect(() => {
-    // Simuler la réception de messages en temps réel
-    const interval = setInterval(() => {
-      if (Math.random() < 0.1) { // 10% de chance de recevoir un message
-        simulateTyping();
-      }
-    }, 5000);
+    const fetchUserDataAndConnect = async () => {
+      try {
+        const token = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+        const userId = await AsyncStorage.getItem(STORAGE_KEYS.USER_ID);
 
-    return () => clearInterval(interval);
-  }, []);
+        if (token && userId) {
+          // Connexion au service WebSocket
+          chatService.connect(token, userId);
+
+          // Charger les messages et les informations du participant
+          const loadConversation = async () => {
+            try {
+              const loadedMessages = await chatService.fetchMessages(conversationId, token);
+              const loadedParticipant = await chatService.fetchUser(userId, token);
+
+              setMessages(loadedMessages);
+              setParticipant(loadedParticipant);
+            } catch (error) {
+              console.error("Erreur lors du chargement de la conversation:", error);
+            }
+          };
+
+          loadConversation();
+
+          // Écouter les nouveaux messages
+          chatService.onMessage((message) => {
+            setMessages(prev => [...prev, message]);
+          });
+        }
+      } catch (error) {
+        console.error("Erreur lors de la récupération des données utilisateur:", error);
+      }
+    };
+
+    fetchUserDataAndConnect();
+
+    return () => {
+      // Déconnexion du service WebSocket
+      chatService.disconnect();
+    };
+  }, [conversationId]);
 
   useEffect(() => {
     if (isRecording) {
       const interval = setInterval(() => {
         setRecordingTime(prev => prev + 1);
       }, 1000);
-      
+
       Animated.loop(
         Animated.sequence([
           Animated.timing(recordingAnimation, {
@@ -144,25 +126,9 @@ const ChatScreen = () => {
     }
   }, [isRecording]);
 
-  const simulateTyping = () => {
-    setIsTyping(true);
-    setTimeout(() => {
-      setIsTyping(false);
-      // Ajouter un nouveau message
-      const newMessage = {
-        id: `m${Date.now()}`,
-        text: ['Comment ça va ?', 'Tu es libre demain ?', 'J\'ai vu ton story !'][Math.floor(Math.random() * 3)],
-        senderId: participant.id,
-        timestamp: new Date().toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }),
-        isRead: false,
-        type: 'text',
-      };
-      setMessages(prev => [...prev, newMessage]);
-    }, 2000);
-  };
-
-  const sendMessage = () => {
+  const sendMessage = async () => {
     if (inputText.trim()) {
+      const token = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
       const newMessage = {
         id: `m${Date.now()}`,
         text: inputText.trim(),
@@ -171,10 +137,13 @@ const ChatScreen = () => {
         isRead: false,
         type: 'text',
       };
-      
+
       setMessages(prev => [...prev, newMessage]);
       setInputText('');
-      
+
+      // Envoyer le message via le service
+      chatService.sendMessage(conversationId, inputText.trim());
+
       // Défiler vers le bas
       setTimeout(() => {
         flatListRef.current?.scrollToEnd({ animated: true });
@@ -185,14 +154,13 @@ const ChatScreen = () => {
   const handleCall = (type) => {
     Alert.alert(
       type === 'voice' ? 'Appel vocal' : 'Appel vidéo',
-      `Appeler ${participant.name} ?`,
+      `Appeler ${participant?.name || 'le contact'} ?`,
       [
         { text: 'Annuler', style: 'cancel' },
-        { 
-          text: 'Appeler', 
+        {
+          text: 'Appeler',
           onPress: () => {
-            // Ici vous intégreriez votre logique d'appel (WebRTC, etc.)
-            Alert.alert('Appel en cours...', `${type === 'voice' ? 'Appel vocal' : 'Appel vidéo'} avec ${participant.name}`);
+            // Logique d'appel à implémenter
           }
         }
       ]
@@ -219,22 +187,18 @@ const ChatScreen = () => {
 
   const handleAttachmentType = (type) => {
     setShowAttachmentModal(false);
-    
+
     switch (type) {
       case 'photo':
         // Logique pour sélectionner une photo
-        Alert.alert('Photo', 'Sélection de photo depuis la galerie');
         break;
       case 'camera':
         // Logique pour prendre une photo
-        Alert.alert('Caméra', 'Ouverture de la caméra');
         break;
       case 'document':
         // Logique pour sélectionner un document
-        Alert.alert('Document', 'Sélection de document');
         break;
       case 'location':
-        // Logique pour partager la localisation
         sendLocationMessage();
         break;
     }
@@ -249,12 +213,12 @@ const ChatScreen = () => {
       isRead: false,
       type: 'location',
       location: {
-        latitude: 12.3641,
-        longitude: -1.5319,
-        address: 'Ouagadougou, Burkina Faso'
+        latitude: 0,
+        longitude: 0,
+        address: 'Position actuelle'
       }
     };
-    
+
     setMessages(prev => [...prev, locationMessage]);
   };
 
@@ -266,8 +230,7 @@ const ChatScreen = () => {
   const stopRecording = () => {
     setIsRecording(false);
     setRecordingTime(0);
-    
-    // Envoyer le message vocal
+
     const voiceMessage = {
       id: `m${Date.now()}`,
       text: '🎵 Message vocal',
@@ -277,7 +240,7 @@ const ChatScreen = () => {
       type: 'voice',
       duration: recordingTime,
     };
-    
+
     setMessages(prev => [...prev, voiceMessage]);
   };
 
@@ -296,7 +259,7 @@ const ChatScreen = () => {
       newSelection.add(messageId);
     }
     setSelectedMessages(newSelection);
-    
+
     if (newSelection.size === 0) {
       setIsSelectionMode(false);
     }
@@ -311,42 +274,44 @@ const ChatScreen = () => {
   const renderHeader = () => (
     <View style={styles.header}>
       <View style={styles.headerContent}>
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => router.back()}
           style={styles.backButton}
         >
           <Ionicons name="arrow-back" size={24} color="#1e293b" />
         </TouchableOpacity>
-        
-        <TouchableOpacity 
+
+        <TouchableOpacity
           style={styles.participantInfo}
-          onPress={() => router.push(`/screens/messages/profile?userId=${participant.id}`)}
+          onPress={() => participant && router.push(`/screens/messages/profile?userId=${participant.id}`)}
         >
-          <Image source={{ uri: participant.avatar }} style={styles.headerAvatar} />
+          {participant?.avatar && (
+            <Image source={{ uri: participant.avatar }} style={styles.headerAvatar} />
+          )}
           <View style={styles.participantDetails}>
-            <Text style={styles.participantName}>{participant.name}</Text>
+            <Text style={styles.participantName}>{participant?.name || 'Chargement...'}</Text>
             <Text style={styles.participantStatus}>
-              {isTyping ? 'En train d\'écrire...' : 
-               participant.isOnline ? 'En ligne' : 
-               `Vu il y a ${participant.lastSeen}`}
+              {isTyping ? 'En train d\'écrire...' :
+               participant?.isOnline ? 'En ligne' :
+               participant?.lastSeen ? `Vu il y a ${participant.lastSeen}` : ''}
             </Text>
           </View>
         </TouchableOpacity>
-        
+
         <View style={styles.headerActions}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.headerAction}
             onPress={() => handleCall('voice')}
           >
             <Ionicons name="call" size={22} color="#667eea" />
           </TouchableOpacity>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.headerAction}
             onPress={() => handleCall('video')}
           >
             <Ionicons name="videocam" size={22} color="#667eea" />
           </TouchableOpacity>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.headerAction}
             onPress={() => router.push(`/screens/messages/chat-settings?conversationId=${conversationId}`)}
           >
@@ -354,7 +319,7 @@ const ChatScreen = () => {
           </TouchableOpacity>
         </View>
       </View>
-      
+
       {isSelectionMode && (
         <View style={styles.selectionHeader}>
           <Text style={styles.selectionCount}>{selectedMessages.size} message(s) sélectionné(s)</Text>
@@ -368,7 +333,7 @@ const ChatScreen = () => {
             <TouchableOpacity style={styles.selectionAction}>
               <Ionicons name="trash" size={20} color="#ef4444" />
             </TouchableOpacity>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.selectionAction}
               onPress={() => {
                 setIsSelectionMode(false);
@@ -383,11 +348,10 @@ const ChatScreen = () => {
     </View>
   );
 
-  const renderMessage = ({ item, index }) => {
+  const renderMessage = ({ item }) => {
     const isMe = item.senderId === 'me';
     const isSelected = selectedMessages.has(item.id);
-    const showAvatar = !isMe && (index === 0 || messages[index - 1].senderId !== item.senderId);
-    
+
     return (
       <TouchableOpacity
         style={[
@@ -400,11 +364,10 @@ const ChatScreen = () => {
         activeOpacity={0.7}
       >
         <View style={[styles.messageWrapper, isMe && styles.myMessageWrapper]}>
-          {!isMe && showAvatar && (
+          {!isMe && participant?.avatar && (
             <Image source={{ uri: participant.avatar }} style={styles.messageAvatar} />
           )}
-          {!isMe && !showAvatar && <View style={styles.avatarSpacer} />}
-          
+
           <View style={[
             styles.messageBubble,
             isMe ? styles.myMessageBubble : styles.theirMessageBubble,
@@ -418,7 +381,7 @@ const ChatScreen = () => {
                 {item.text}
               </Text>
             )}
-            
+
             {item.type === 'voice' && (
               <View style={styles.voiceMessage}>
                 <TouchableOpacity style={styles.playButton}>
@@ -437,7 +400,7 @@ const ChatScreen = () => {
                 </Text>
               </View>
             )}
-            
+
             {item.type === 'location' && (
               <View style={styles.locationMessage}>
                 <Ionicons name="location" size={20} color={isMe ? "white" : "#667eea"} />
@@ -449,7 +412,7 @@ const ChatScreen = () => {
                 </Text>
               </View>
             )}
-            
+
             <View style={styles.messageFooter}>
               <Text style={[
                 styles.messageTime,
@@ -458,10 +421,10 @@ const ChatScreen = () => {
                 {item.timestamp}
               </Text>
               {isMe && (
-                <Ionicons 
-                  name={item.isRead ? "checkmark-done" : "checkmark"} 
-                  size={14} 
-                  color={item.isRead ? "#22c55e" : "rgba(255,255,255,0.7)"} 
+                <Ionicons
+                  name={item.isRead ? "checkmark-done" : "checkmark"}
+                  size={14}
+                  color={item.isRead ? "#22c55e" : "rgba(255,255,255,0.7)"}
                 />
               )}
             </View>
@@ -472,8 +435,8 @@ const ChatScreen = () => {
   };
 
   const renderTypingIndicator = () => {
-    if (!isTyping) return null;
-    
+    if (!isTyping || !participant) return null;
+
     return (
       <View style={styles.typingContainer}>
         <Image source={{ uri: participant.avatar }} style={styles.messageAvatar} />
@@ -504,7 +467,7 @@ const ChatScreen = () => {
     if (isRecording) {
       return (
         <View style={styles.recordingContainer}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.cancelRecording}
             onPress={() => {
               setIsRecording(false);
@@ -513,7 +476,7 @@ const ChatScreen = () => {
           >
             <Ionicons name="close" size={24} color="#ef4444" />
           </TouchableOpacity>
-          
+
           <View style={styles.recordingInfo}>
             <Animated.View style={[
               styles.recordingDot,
@@ -524,8 +487,8 @@ const ChatScreen = () => {
             <Text style={styles.recordingText}>Enregistrement...</Text>
             <Text style={styles.recordingTime}>{formatTime(recordingTime)}</Text>
           </View>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={styles.sendRecording}
             onPress={stopRecording}
           >
@@ -534,16 +497,16 @@ const ChatScreen = () => {
         </View>
       );
     }
-    
+
     return (
       <View style={styles.inputContainer}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={styles.attachmentButton}
           onPress={handleAttachment}
         >
           <Ionicons name="add" size={24} color="#667eea" />
         </TouchableOpacity>
-        
+
         <View style={styles.textInputContainer}>
           <TextInput
             ref={inputRef}
@@ -554,19 +517,18 @@ const ChatScreen = () => {
             multiline
             maxLength={1000}
           />
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.emojiButton}
             onPress={() => {
-              // Logique pour ouvrir le sélecteur d'emojis
               setInputText(prev => prev + '😊');
             }}
           >
             <Ionicons name="happy-outline" size={20} color="#667eea" />
           </TouchableOpacity>
         </View>
-        
+
         {inputText.trim() ? (
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.sendButton}
             onPress={sendMessage}
           >
@@ -578,7 +540,7 @@ const ChatScreen = () => {
             </LinearGradient>
           </TouchableOpacity>
         ) : (
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.voiceButton}
             onPressIn={startRecording}
           >
@@ -604,9 +566,9 @@ const ChatScreen = () => {
               <Ionicons name="close" size={24} color="#64748b" />
             </TouchableOpacity>
           </View>
-          
+
           <View style={styles.attachmentOptions}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={styles.attachmentOption}
               onPress={() => handleAttachmentType('photo')}
             >
@@ -615,8 +577,8 @@ const ChatScreen = () => {
               </View>
               <Text style={styles.attachmentOptionText}>Photo</Text>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={styles.attachmentOption}
               onPress={() => handleAttachmentType('camera')}
             >
@@ -625,8 +587,8 @@ const ChatScreen = () => {
               </View>
               <Text style={styles.attachmentOptionText}>Caméra</Text>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={styles.attachmentOption}
               onPress={() => handleAttachmentType('document')}
             >
@@ -635,8 +597,8 @@ const ChatScreen = () => {
               </View>
               <Text style={styles.attachmentOptionText}>Document</Text>
             </TouchableOpacity>
-            
-            <TouchableOpacity 
+
+            <TouchableOpacity
               style={styles.attachmentOption}
               onPress={() => handleAttachmentType('location')}
             >
@@ -654,8 +616,8 @@ const ChatScreen = () => {
   return (
     <SafeAreaView style={styles.container}>
       {renderHeader()}
-      
-      <KeyboardAvoidingView 
+
+      <KeyboardAvoidingView
         style={styles.chatContainer}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
@@ -669,11 +631,11 @@ const ChatScreen = () => {
           showsVerticalScrollIndicator={false}
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
         />
-        
+
         {renderTypingIndicator()}
         {renderInput()}
       </KeyboardAvoidingView>
-      
+
       {renderAttachmentModal()}
     </SafeAreaView>
   );

@@ -21,7 +21,7 @@ import * as ImagePicker from 'expo-image-picker';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import EventService from '../../../services/events/event';
 import Createeventstyles from '../../../styles/createevent';
-
+import { Video } from 'expo-av';
 
 const { width, height } = Dimensions.get('window');
 
@@ -66,7 +66,7 @@ const CreateEventScreen = () => {
   const [selectedPriceOption, setSelectedPriceOption] = useState('free');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitProgress, setSubmitProgress] = useState('');
-  
+
   const scrollViewRef = useRef(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
 
@@ -87,13 +87,30 @@ const CreateEventScreen = () => {
 
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: true,
-      aspect: [16, 9],
+      allowsEditing: false,
       quality: 0.8,
     });
 
     if (!result.canceled) {
-      setEventData(prev => ({ ...prev, image: result.assets[0].uri }));
+      setEventData(prev => ({ ...prev, image: result.assets[0].uri, video: null }));
+    }
+  };
+
+  const pickVideo = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission refusée', 'Nous avons besoin de votre permission pour accéder à vos vidéos.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Videos,
+      allowsEditing: false,
+      quality: 1,
+    });
+
+    if (!result.canceled) {
+      setEventData(prev => ({ ...prev, video: result.assets[0].uri, image: null }));
     }
   };
 
@@ -105,22 +122,22 @@ const CreateEventScreen = () => {
     }
 
     const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: true,
-      aspect: [16, 9],
+      allowsEditing: false,
       quality: 0.8,
     });
 
     if (!result.canceled) {
-      setEventData(prev => ({ ...prev, image: result.assets[0].uri }));
+      setEventData(prev => ({ ...prev, image: result.assets[0].uri, video: null }));
     }
   };
 
-  const showImageOptions = () => {
+  const showMediaOptions = () => {
     Alert.alert(
-      'Ajouter une image',
+      'Ajouter un média',
       'Choisissez une option',
       [
-        { text: 'Galerie', onPress: pickImage },
+        { text: 'Galerie (Image)', onPress: pickImage },
+        { text: 'Galerie (Vidéo)', onPress: pickVideo },
         { text: 'Caméra', onPress: takePhoto },
         { text: 'Annuler', style: 'cancel' },
       ],
@@ -185,10 +202,10 @@ const CreateEventScreen = () => {
   const prepareEventData = () => {
     const eventDate = new Date(eventData.date);
     const eventTime = new Date(eventData.time);
-    
+
     eventDate.setHours(eventTime.getHours());
     eventDate.setMinutes(eventTime.getMinutes());
-    
+
     const formattedData = {
       title: eventData.title.trim(),
       description: eventData.description.trim(),
@@ -196,7 +213,8 @@ const CreateEventScreen = () => {
       location: eventData.location.trim(),
       category: eventData.category,
       price: selectedPriceOption === 'free' ? 'Gratuit' : `${eventData.customPrice}€`,
-      image: eventData.image || eventData.video || null,
+      image: eventData.image || null,
+      video: eventData.video || null,
       is_public: eventData.isPublic,
       allow_comments: eventData.allowComments,
       allow_sharing: eventData.allowSharing,
@@ -205,26 +223,24 @@ const CreateEventScreen = () => {
 
     console.log('Données formatées avant envoi:', formattedData);
     return formattedData;
-    
   };
 
   const handleSubmit = async () => {
-   
     if (!validateForm()) return;
 
     setIsSubmitting(true);
     setSubmitProgress('Préparation des données...');
-    
+
     try {
       const formattedEventData = prepareEventData();
-      
+
       setSubmitProgress('Création de l\'événement...');
-      
+
       const result = await EventService.createEvent(formattedEventData);
-      
+
       if (result.success) {
         setSubmitProgress('Événement créé avec succès!');
-        
+
         Alert.alert(
           'Succès! 🎉',
           'Votre événement a été créé avec succès!',
@@ -251,10 +267,9 @@ const CreateEventScreen = () => {
       } else {
         throw new Error(result.error || 'Erreur inconnue');
       }
-      
     } catch (error) {
       console.error('Erreur création événement:', error);
-      
+
       Alert.alert(
         'Erreur',
         error.message || 'Une erreur est survenue lors de la création de l\'événement. Veuillez réessayer.',
@@ -275,8 +290,8 @@ const CreateEventScreen = () => {
         <Ionicons name="close" size={24} color="#1e293b" />
       </TouchableOpacity>
       <Text style={Createeventstyles.headerTitle}>Créer un événement</Text>
-      <TouchableOpacity 
-        onPress={handleSubmit} 
+      <TouchableOpacity
+        onPress={handleSubmit}
         style={[Createeventstyles.headerButton, Createeventstyles.saveButton, isSubmitting && Createeventstyles.saveButtonDisabled]}
         disabled={isSubmitting}
       >
@@ -291,7 +306,7 @@ const CreateEventScreen = () => {
 
   const renderSubmitProgress = () => {
     if (!isSubmitting || !submitProgress) return null;
-    
+
     return (
       <View style={Createeventstyles.progressContainer}>
         <ActivityIndicator size="small" color="#667eea" />
@@ -300,16 +315,28 @@ const CreateEventScreen = () => {
     );
   };
 
-  const renderImageSection = () => (
+  const renderMediaSection = () => (
     <View style={Createeventstyles.section}>
-      <Text style={Createeventstyles.sectionTitle}>Image de couverture</Text>
-      <TouchableOpacity style={Createeventstyles.imageContainer} onPress={showImageOptions}>
+      <Text style={Createeventstyles.sectionTitle}>Média de couverture</Text>
+      <TouchableOpacity style={Createeventstyles.imageContainer} onPress={showMediaOptions}>
         {eventData.image ? (
           <View>
             <Image source={{ uri: eventData.image }} style={Createeventstyles.eventImage} />
             <View style={Createeventstyles.imageOverlay}>
               <Ionicons name="camera" size={24} color="white" />
-              <Text style={Createeventstyles.imageOverlayText}>Changer l'image</Text>
+              <Text style={Createeventstyles.imageOverlayText}>Changer le média</Text>
+            </View>
+          </View>
+        ) : eventData.video ? (
+          <View>
+            <Video
+              source={{ uri: eventData.video }}
+              style={Createeventstyles.eventVideo}
+              resizeMode="cover"
+            />
+            <View style={Createeventstyles.imageOverlay}>
+              <Ionicons name="videocam" size={24} color="white" />
+              <Text style={Createeventstyles.imageOverlayText}>Changer le média</Text>
             </View>
           </View>
         ) : (
@@ -319,8 +346,8 @@ const CreateEventScreen = () => {
               style={Createeventstyles.imagePlaceholderGradient}
             >
               <Ionicons name="camera" size={32} color="white" />
-              <Text style={Createeventstyles.imagePlaceholderText}>Ajouter une image</Text>
-              <Text style={Createeventstyles.imagePlaceholderSubtext}>Recommandé: 1200x675px</Text>
+              <Text style={Createeventstyles.imagePlaceholderText}>Ajouter un média</Text>
+              <Text style={Createeventstyles.imagePlaceholderSubtext}>Image ou Vidéo</Text>
             </LinearGradient>
           </View>
         )}
@@ -331,7 +358,7 @@ const CreateEventScreen = () => {
   const renderBasicInfo = () => (
     <View style={Createeventstyles.section}>
       <Text style={Createeventstyles.sectionTitle}>Informations de base</Text>
-      
+
       <View style={Createeventstyles.inputContainer}>
         <Text style={Createeventstyles.inputLabel}>Titre de l'événement *</Text>
         <TextInput
@@ -363,8 +390,8 @@ const CreateEventScreen = () => {
   const renderCategorySelection = () => (
     <View style={Createeventstyles.section}>
       <Text style={Createeventstyles.sectionTitle}>Catégorie *</Text>
-      <ScrollView 
-        horizontal 
+      <ScrollView
+        horizontal
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={Createeventstyles.categoriesContainer}
       >
@@ -385,10 +412,10 @@ const CreateEventScreen = () => {
                 Createeventstyles.categoryIconContainer,
                 { backgroundColor: eventData.category === category.id ? 'rgba(255,255,255,0.2)' : 'white' }
               ]}>
-                <Ionicons 
-                  name={category.icon} 
-                  size={20} 
-                  color={eventData.category === category.id ? category.color : '#64748b'} 
+                <Ionicons
+                  name={category.icon}
+                  size={20}
+                  color={eventData.category === category.id ? category.color : '#64748b'}
                 />
               </View>
               <Text style={[
@@ -407,9 +434,9 @@ const CreateEventScreen = () => {
   const renderDateTimeSection = () => (
     <View style={Createeventstyles.section}>
       <Text style={Createeventstyles.sectionTitle}>Date et heure</Text>
-      
+
       <View style={Createeventstyles.dateTimeContainer}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={Createeventstyles.dateTimeButton}
           onPress={() => setShowDatePicker(true)}
         >
@@ -423,7 +450,7 @@ const CreateEventScreen = () => {
           <Ionicons name="chevron-forward" size={16} color="#94a3b8" />
         </TouchableOpacity>
 
-        <TouchableOpacity 
+        <TouchableOpacity
           style={Createeventstyles.dateTimeButton}
           onPress={() => setShowTimePicker(true)}
         >
@@ -479,7 +506,7 @@ const CreateEventScreen = () => {
   const renderPriceSection = () => (
     <View style={Createeventstyles.section}>
       <Text style={Createeventstyles.sectionTitle}>Prix</Text>
-      
+
       <View style={Createeventstyles.priceOptionsContainer}>
         {priceOptions.map((option) => (
           <TouchableOpacity
@@ -530,7 +557,7 @@ const CreateEventScreen = () => {
   const renderSettingsSection = () => (
     <View style={Createeventstyles.section}>
       <Text style={Createeventstyles.sectionTitle}>Paramètres de publication</Text>
-      
+
       <View style={Createeventstyles.settingsContainer}>
         <View style={Createeventstyles.settingItem}>
           <View style={Createeventstyles.settingInfo}>
@@ -589,8 +616,8 @@ const CreateEventScreen = () => {
     <SafeAreaView style={Createeventstyles.container}>
       {renderHeader()}
       {renderSubmitProgress()}
-      
-      <KeyboardAvoidingView 
+
+      <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={Createeventstyles.keyboardContainer}
       >
@@ -600,14 +627,14 @@ const CreateEventScreen = () => {
           contentContainerStyle={Createeventstyles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {renderImageSection()}
+          {renderMediaSection()}
           {renderBasicInfo()}
           {renderCategorySelection()}
           {renderDateTimeSection()}
           {renderLocationSection()}
           {renderPriceSection()}
           {renderSettingsSection()}
-          
+
           <View style={Createeventstyles.bottomSpacer} />
         </Animated.ScrollView>
       </KeyboardAvoidingView>

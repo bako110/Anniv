@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -34,104 +34,240 @@ const NewChatScreen = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState('contacts');
   const [showSuggestions, setShowSuggestions] = useState(true);
-  const [userStatus, setUserStatus] = useState({ online_status: false, last_seen: null });
-
+  const [userStatus, setUserStatus] = useState({
+    online_status: false,
+    last_seen: null,
+    computed_at: null,
+    is_realtime: false
+  });
   const [userId, setUserId] = useState(null);
   const [token, setToken] = useState(null);
-
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const searchInputRef = useRef(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
+  const statusUpdateInterval = useRef(null);
+  const timeUpdateInterval = useRef(null);
 
-  // Fonction pour calculer le temps écoulé depuis last_seen
-  const calculateTimeSince = (lastSeenDate) => {
+  const calculateTimeSince = useCallback((lastSeenDate) => {
     if (!lastSeenDate) return "longtemps";
-    
+    try {
+      const now = new Date();
+      const lastSeen = new Date(lastSeenDate);
+      const diffInSeconds = Math.floor((now - lastSeen) / 1000);
+      if (diffInSeconds < 30) return "à l'instant";
+      if (diffInSeconds < 60) return "il y a moins d'1 min";
+      if (diffInSeconds < 120) return "il y a 1 min";
+      if (diffInSeconds < 3600) return `il y a ${Math.floor(diffInSeconds / 60)} min`;
+      if (diffInSeconds < 7200) return "il y a 1 h";
+      if (diffInSeconds < 86400) return `il y a ${Math.floor(diffInSeconds / 3600)} h`;
+      if (diffInSeconds < 172800) return "il y a 1 jour";
+      if (diffInSeconds < 2592000) return `il y a ${Math.floor(diffInSeconds / 86400)} jours`;
+      if (diffInSeconds < 5184000) return "il y a 1 mois";
+      if (diffInSeconds < 31536000) return `il y a ${Math.floor(diffInSeconds / 2592000)} mois`;
+      return "il y a longtemps";
+    } catch (error) {
+      console.warn('Erreur calcul temps écoulé:', error);
+      return "inconnu";
+    }
+  }, []);
+
+  const getConnectionStatus = useCallback((lastSeenDate, isOnline) => {
+    if (isOnline) {
+      return { status: 'online', text: 'En ligne', color: '#10b981' };
+    }
+    if (!lastSeenDate) {
+      return { status: 'unknown', text: 'Inconnu', color: '#94a3b8' };
+    }
     const now = new Date();
     const lastSeen = new Date(lastSeenDate);
     const diffInSeconds = Math.floor((now - lastSeen) / 1000);
-    
-    if (diffInSeconds < 60) return "à l'instant";
-    if (diffInSeconds < 3600) return `il y a ${Math.floor(diffInSeconds / 60)} min`;
-    if (diffInSeconds < 86400) return `il y a ${Math.floor(diffInSeconds / 3600)} h`;
-    if (diffInSeconds < 2592000) return `il y a ${Math.floor(diffInSeconds / 86400)} j`;
-    return "longtemps";
+    if (diffInSeconds < 300) {
+      return { status: 'recently_online', text: 'Récemment en ligne', color: '#f59e0b' };
+    } else if (diffInSeconds < 3600) {
+      return { status: 'recently_active', text: 'Actif récemment', color: '#6b7280' };
+    } else {
+      return { status: 'offline', text: calculateTimeSince(lastSeenDate), color: '#94a3b8' };
+    }
+  }, [calculateTimeSince]);
+
+  const fetchUserStatusWithRetry = async (userId, maxRetries = 3) => {
+    let retries = 0;
+    while (retries < maxRetries) {
+      try {
+        const status = await getUserStatus(userId, token);
+        console.log(`[NewChatScreen] Statut récupéré pour ${userId}:`, status);
+        return status;
+      } catch (error) {
+        console.warn(`[NewChatScreen] Tentative ${retries + 1} échouée pour ${userId}:`, error);
+        retries++;
+        if (retries < maxRetries) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * retries));
+        }
+      }
+    }
+    return null;
   };
 
-  // Récupérer token et userId au montage
+  const updateContactsStatus = useCallback(async () => {
+    if (!userId || !token || filteredContacts.length === 0) return;
+    try {
+      console.log('[NewChatScreen] Mise à jour des statuts des contacts...');
+      const updatedSections = await Promise.all(
+        filteredContacts.map(async (section) => {
+          const updatedContacts = await Promise.allSettled(
+            section.data.map(async (contact) => {
+              try {
+                const status = await fetchUserStatusWithRetry(contact.user_id);
+                if (status) {
+                  const connectionStatus = getConnectionStatus(status.last_seen, status.online_status);
+                  return {
+                    ...contact,
+                    isOnline: status.online_status || false,
+                    lastSeen: connectionStatus.text,
+                    connectionStatus: connectionStatus,
+                    statusData: status,
+                    lastUpdated: new Date().toISOString()
+                  };
+                }
+                return contact;
+              } catch (error) {
+                console.warn(`[NewChatScreen] Erreur mise à jour statut ${contact.user_id}:`, error);
+                return contact;
+              }
+            })
+          );
+          return {
+            ...section,
+            data: updatedContacts
+              .filter(result => result.status === 'fulfilled')
+              .map(result => result.value)
+              .sort((a, b) => {
+                const statusOrder = { 'online': 0, 'recently_online': 1, 'recently_active': 2, 'offline': 3, 'unknown': 4 };
+                const aOrder = statusOrder[a.connectionStatus?.status] || 4;
+                const bOrder = statusOrder[b.connectionStatus?.status] || 4;
+                if (aOrder !== bOrder) return aOrder - bOrder;
+                const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
+                const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+                return aName.localeCompare(bName);
+              })
+          };
+        })
+      );
+      setFilteredContacts(updatedSections);
+      console.log('[NewChatScreen] Statuts des contacts mis à jour');
+    } catch (error) {
+      console.error('[NewChatScreen] Erreur mise à jour statuts:', error);
+    }
+  }, [userId, token, filteredContacts, getConnectionStatus]);
+
+  const updateDisplayedTimes = useCallback(() => {
+    setFilteredContacts(currentSections =>
+      currentSections.map(section => ({
+        ...section,
+        data: section.data.map(contact => {
+          if (contact.statusData?.last_seen && !contact.isOnline) {
+            const connectionStatus = getConnectionStatus(contact.statusData.last_seen, false);
+            return {
+              ...contact,
+              lastSeen: connectionStatus.text,
+              connectionStatus: connectionStatus
+            };
+          }
+          return contact;
+        })
+      }))
+    );
+  }, [getConnectionStatus]);
+
   useEffect(() => {
     const loadAuthData = async () => {
       try {
         const storedToken = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
         const storedUserInfo = await AsyncStorage.getItem(STORAGE_KEYS.USER_INFO);
-        if (storedToken) setToken(storedToken);
-
+        if (storedToken) {
+          setToken(storedToken);
+          console.log('[NewChatScreen] Token chargé avec succès');
+        }
         if (storedUserInfo) {
           const userInfo = JSON.parse(storedUserInfo);
           if (userInfo?.id) {
             setUserId(userInfo.id);
-            // Charger le statut de l'utilisateur
-            const status = await getUserStatus(userInfo.id, storedToken);
-            setUserStatus(status);
+            console.log('[NewChatScreen] UserId chargé:', userInfo.id);
+            try {
+              const status = await getUserStatus(userInfo.id, storedToken);
+              console.log('[NewChatScreen] Statut utilisateur chargé:', status);
+              setUserStatus(status);
+            } catch (error) {
+              console.warn('[NewChatScreen] Erreur chargement statut utilisateur:', error);
+            }
           }
         }
       } catch (error) {
-        console.warn('Erreur récupération token ou userInfo:', error);
+        console.warn('[NewChatScreen] Erreur récupération données auth:', error);
       }
     };
-
     loadAuthData();
   }, []);
 
-  // Mettre à jour le statut lorsque le composant est focus
   useEffect(() => {
     const updateStatus = async () => {
       if (userId && token) {
         try {
+          console.log('[NewChatScreen] Mise à jour statut en ligne...');
           await updateUserStatus(userId, token, true);
           const status = await getUserStatus(userId, token);
+          console.log('[NewChatScreen] Statut mis à jour:', status);
           setUserStatus(status);
         } catch (error) {
-          console.warn("Erreur mise à jour statut:", error);
+          console.warn("[NewChatScreen] Erreur mise à jour statut:", error);
         }
       }
     };
-
     updateStatus();
-
     return () => {
       if (userId && token) {
+        console.log('[NewChatScreen] Mise à jour statut hors ligne...');
         updateUserStatus(userId, token, false).catch(console.warn);
       }
     };
   }, [userId, token]);
 
-  // Appeler filterContacts lorsque userId ou token change
+  useEffect(() => {
+    if (userId && token) {
+      statusUpdateInterval.current = setInterval(updateContactsStatus, 30000);
+      timeUpdateInterval.current = setInterval(updateDisplayedTimes, 10000);
+      return () => {
+        if (statusUpdateInterval.current) {
+          clearInterval(statusUpdateInterval.current);
+        }
+        if (timeUpdateInterval.current) {
+          clearInterval(timeUpdateInterval.current);
+        }
+      };
+    }
+  }, [userId, token, updateContactsStatus, updateDisplayedTimes]);
+
   useEffect(() => {
     if (userId && token) {
       filterContacts();
     }
   }, [userId, token]);
 
-  // Relancer filtre quand recherche ou onglet change
   useEffect(() => {
     if (userId && token) {
       filterContacts();
     }
   }, [searchQuery, activeTab]);
 
-  // Fonction pour construire l'URL complète de l'image
   const getImageUrl = (imageUrl) => {
     if (!imageUrl) return null;
-
     if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
       return imageUrl;
     }
-
     if (imageUrl.startsWith('/')) {
       return `${API_BASE_URL}${imageUrl}`;
     }
-
     return `${API_BASE_URL}/${imageUrl}`;
   };
 
@@ -148,7 +284,6 @@ const NewChatScreen = () => {
         useNativeDriver: true,
       }),
     ]).start();
-
     setTimeout(() => {
       searchInputRef.current?.focus();
     }, 400);
@@ -156,69 +291,100 @@ const NewChatScreen = () => {
 
   const filterContacts = async () => {
     setIsLoading(true);
-
+    console.log('[NewChatScreen] Filtrage des contacts...');
     try {
       if (!searchQuery.trim()) {
         const contactsData = await fetchUserFriends(userId);
-
-        // Ajouter le statut pour chaque contact
-        const contactsWithStatus = await Promise.all(
+        console.log('[NewChatScreen] Contacts récupérés:', contactsData?.length);
+        const contactsWithStatus = await Promise.allSettled(
           contactsData.map(async (contact) => {
             try {
-              const status = await getUserStatus(contact.id, token);
-              return {
-                ...contact,
-                isOnline: status.online_status,
-                lastSeen: calculateTimeSince(status.last_seen)
-              };
+              console.log(`[NewChatScreen] Récupération statut pour contact ${contact.user_id}`);
+              const status = await fetchUserStatusWithRetry(contact.user_id);
+              if (status) {
+                const connectionStatus = getConnectionStatus(status.last_seen, status.online_status);
+                return {
+                  ...contact,
+                  isOnline: status.online_status || false,
+                  lastSeen: connectionStatus.text,
+                  connectionStatus: connectionStatus,
+                  statusData: status,
+                  lastUpdated: new Date().toISOString()
+                };
+              } else {
+                return {
+                  ...contact,
+                  isOnline: false,
+                  lastSeen: "inconnu",
+                  connectionStatus: { status: 'unknown', text: 'Inconnu', color: '#94a3b8' },
+                  statusData: null,
+                  lastUpdated: new Date().toISOString()
+                };
+              }
             } catch (error) {
-              console.warn(`Erreur récupération statut pour ${contact.id}:`, error);
+              console.warn(`[NewChatScreen] Erreur récupération statut pour ${contact.user_id}:`, error);
               return {
                 ...contact,
                 isOnline: false,
-                lastSeen: "inconnu"
+                lastSeen: "inconnu",
+                connectionStatus: { status: 'unknown', text: 'Inconnu', color: '#94a3b8' },
+                statusData: null,
+                lastUpdated: new Date().toISOString()
               };
             }
           })
         );
-
-        const grouped = contactsWithStatus.reduce((acc, contact) => {
+        const successfulContacts = contactsWithStatus
+          .filter(result => result.status === 'fulfilled')
+          .map(result => result.value);
+        const grouped = successfulContacts.reduce((acc, contact) => {
           const category = contact.category || 'Autres';
           if (!acc[category]) acc[category] = [];
           acc[category].push(contact);
           return acc;
         }, {});
-
         const sections = Object.keys(grouped).map(category => ({
           title: category,
           data: grouped[category].sort((a, b) => {
-            if (a.isOnline !== b.isOnline) return b.isOnline - a.isOnline;
+            const statusOrder = { 'online': 0, 'recently_online': 1, 'recently_active': 2, 'offline': 3, 'unknown': 4 };
+            const aOrder = statusOrder[a.connectionStatus?.status] || 4;
+            const bOrder = statusOrder[b.connectionStatus?.status] || 4;
+            if (aOrder !== bOrder) return aOrder - bOrder;
             const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
             const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim();
             return aName.localeCompare(bName);
           })
         }));
-
+        console.log('[NewChatScreen] Sections créées:', sections.length);
         setFilteredContacts(sections);
         setShowSuggestions(true);
       } else {
+        console.log('[NewChatScreen] Recherche d\'utilisateurs:', searchQuery);
         const results = await searchUsers(searchQuery);
-        setFilteredContacts([{ 
-          title: 'Résultats', 
+        setFilteredContacts([{
+          title: 'Résultats',
           data: results.map(contact => ({
             ...contact,
             isOnline: false,
-            lastSeen: "inconnu"
+            lastSeen: "inconnu",
+            connectionStatus: { status: 'unknown', text: 'Inconnu', color: '#94a3b8' },
+            statusData: null,
+            lastUpdated: new Date().toISOString()
           }))
         }]);
         setShowSuggestions(false);
       }
     } catch (error) {
-      console.error('Erreur filtrage contacts :', error);
+      console.error('[NewChatScreen] Erreur filtrage contacts:', error);
       Alert.alert('Erreur', "Impossible de charger les contacts.");
     }
-
     setIsLoading(false);
+  };
+
+  const refreshContacts = async () => {
+    setIsRefreshing(true);
+    await updateContactsStatus();
+    setIsRefreshing(false);
   };
 
   const toggleContactSelection = (contactId) => {
@@ -241,53 +407,59 @@ const NewChatScreen = () => {
           {
             text: 'Créer',
             onPress: () => {
-              router.push(`/screens/messages/group-creation?contacts=${Array.from(selectedContacts).join(',')}`);
+              router.push({
+                pathname: `/screens/messages/group-creation`,
+                params: { contacts: Array.from(selectedContacts).join(',') }
+              });
             }
           }
         ]
       );
     } else {
       const targetContactId = contactId || Array.from(selectedContacts)[0];
-      router.push(`/screens/messages/chat?conversationId=${targetContactId}`);
+      router.push({
+        pathname: `/screens/messages/chat`,
+        params: { conversationId: targetContactId }
+      });
     }
   };
 
   const suggestedGroups = [];
 
   const startGroupChat = (group) => {
-    router.push(`/screens/messages/chat?conversationId=group_${group.id}`);
+    router.push({
+      pathname: `/screens/messages/chat`,
+      params: { conversationId: `group_${group.id}` }
+    });
   };
 
   const renderHeader = () => (
     <View style={styles.header}>
       <View style={styles.headerTop}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={styles.backButton}
-        >
+        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#1e293b" />
         </TouchableOpacity>
-
-        <Text style={styles.headerTitle}>Nouveau chat</Text>
-
+        <View style={styles.headerTitleContainer}>
+          <Text style={styles.headerTitle}>Nouveau chat</Text>
+          {userStatus.is_realtime && (
+            <View style={styles.realtimeIndicator}>
+              <View style={styles.realtimeDot} />
+              <Text style={styles.realtimeText}>Temps réel</Text>
+            </View>
+          )}
+        </View>
         <TouchableOpacity
-          style={styles.moreButton}
-          onPress={() => {
-            Alert.alert(
-              'Options',
-              'Choisissez une action',
-              [
-                { text: 'Inviter des amis', onPress: () => {} },
-                { text: 'Scanner QR Code', onPress: () => {} },
-                { text: 'Annuler', style: 'cancel' }
-              ]
-            );
-          }}
+          style={styles.refreshButton}
+          onPress={refreshContacts}
+          disabled={isRefreshing}
         >
-          <Ionicons name="ellipsis-vertical" size={24} color="#667eea" />
+          <Ionicons
+            name="refresh"
+            size={24}
+            color={isRefreshing ? "#94a3b8" : "#667eea"}
+          />
         </TouchableOpacity>
       </View>
-
       <View style={styles.searchContainer}>
         <View style={styles.searchInputContainer}>
           <Ionicons name="search" size={20} color="#94a3b8" />
@@ -309,7 +481,6 @@ const NewChatScreen = () => {
           ) : null}
         </View>
       </View>
-
       <View style={styles.tabsContainer}>
         <TouchableOpacity
           style={[styles.tab, activeTab === 'contacts' && styles.activeTab]}
@@ -327,7 +498,6 @@ const NewChatScreen = () => {
             Contacts
           </Text>
         </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.tab, activeTab === 'groups' && styles.activeTab]}
           onPress={() => setActiveTab('groups')}
@@ -344,7 +514,6 @@ const NewChatScreen = () => {
             Groupes
           </Text>
         </TouchableOpacity>
-
         <TouchableOpacity
           style={[styles.tab, activeTab === 'nearby' && styles.activeTab]}
           onPress={() => setActiveTab('nearby')}
@@ -365,22 +534,21 @@ const NewChatScreen = () => {
     </View>
   );
 
-  const renderContactItem = ({ item, index }) => {
-    const isSelected = selectedContacts.has(item.id);
+  const renderContactItem = ({ item }) => {
+    const isSelected = selectedContacts.has(item.user_id);
     const fullName = `${item.first_name || ''} ${item.last_name || ''}`.trim();
     const imageUrl = getImageUrl(item.avatar_url);
-
     return (
       <TouchableOpacity
         style={[styles.contactItem, isSelected && styles.selectedContactItem]}
         onPress={() => {
           if (selectedContacts.size > 0) {
-            toggleContactSelection(item.id);
+            toggleContactSelection(item.user_id);
           } else {
-            startChat(item.id);
+            startChat(item.user_id);
           }
         }}
-        onLongPress={() => toggleContactSelection(item.id)}
+        onLongPress={() => toggleContactSelection(item.user_id)}
         activeOpacity={0.7}
       >
         <View style={styles.contactContent}>
@@ -400,7 +568,16 @@ const NewChatScreen = () => {
                 </Text>
               </View>
             )}
-            {item.isOnline && <View style={styles.onlineIndicator} />}
+            {item.connectionStatus && (
+              <View style={[
+                styles.statusIndicator,
+                { backgroundColor: item.connectionStatus.color }
+              ]}>
+                {item.connectionStatus.status === 'online' && (
+                  <View style={styles.onlinePulse} />
+                )}
+              </View>
+            )}
             {isSelected && (
               <View style={styles.selectionOverlay}>
                 <Ionicons name="checkmark" size={16} color="white" />
@@ -410,11 +587,12 @@ const NewChatScreen = () => {
           <View style={styles.contactInfo}>
             <View style={styles.contactHeader}>
               <Text style={styles.contactName}>{fullName}</Text>
-              {item.isOnline ? (
-                <Text style={styles.onlineStatus}>En ligne</Text>
-              ) : (
-                <Text style={styles.lastSeen}>{item.lastSeen}</Text>
-              )}
+              <Text style={[
+                styles.connectionStatus,
+                { color: item.connectionStatus?.color || '#94a3b8' }
+              ]}>
+                {item.connectionStatus?.text || 'Inconnu'}
+              </Text>
             </View>
             <Text style={styles.contactStatus} numberOfLines={1}>
               {item.status || 'Aucun statut'}
@@ -424,11 +602,17 @@ const NewChatScreen = () => {
               <Text style={styles.mutualFriends}>
                 {item.mutualFriends || 0} amis en commun
               </Text>
+              {item.statusData?.is_realtime && (
+                <View style={styles.realtimeIndicatorSmall}>
+                  <View style={styles.realtimeDotSmall} />
+                  <Text style={styles.realtimeTextSmall}>TR</Text>
+                </View>
+              )}
             </View>
           </View>
           <TouchableOpacity
             style={styles.infoButton}
-            onPress={() => router.push(`/screens/messages/profile?userId=${item.id}`)}
+            onPress={() => router.push(`/screens/messages/profile?userId=${item.user_id}`)}
           >
             <Ionicons name="information-circle-outline" size={20} color="#94a3b8" />
           </TouchableOpacity>
@@ -437,9 +621,8 @@ const NewChatScreen = () => {
     );
   };
 
-  const renderGroupItem = ({ item, index }) => {
+  const renderGroupItem = ({ item }) => {
     const imageUrl = getImageUrl(item.avatar);
-
     return (
       <TouchableOpacity
         style={styles.groupItem}
@@ -470,117 +653,113 @@ const NewChatScreen = () => {
         <View style={styles.groupInfo}>
           <Text style={styles.groupName}>{item.name}</Text>
           <Text style={styles.groupMembers} numberOfLines={1}>
-            {item.members.join(', ')}
+            {item.memberCount} membres • {item.lastMessage}
           </Text>
-          <Text style={styles.groupMemberCount}>
-            {item.memberCount} membres
-          </Text>
+          <View style={styles.groupMeta}>
+            <Ionicons name="time" size={12} color="#94a3b8" />
+            <Text style={styles.groupTime}>{item.lastMessageTime}</Text>
+          </View>
         </View>
-        <Ionicons name="chevron-forward" size={20} color="#94a3b8" />
+        <TouchableOpacity
+          style={styles.infoButton}
+          onPress={() => router.push(`/screens/messages/group-info?groupId=${item.id}`)}
+        >
+          <Ionicons name="information-circle-outline" size={20} color="#94a3b8" />
+        </TouchableOpacity>
       </TouchableOpacity>
     );
   };
 
-  const renderSectionHeader = ({ section: { title } }) => (
-    <View style={styles.sectionHeader}>
-      <Text style={styles.sectionTitle}>{title}</Text>
-    </View>
-  );
-
-  const renderSuggestions = () => {
-    if (!showSuggestions || searchQuery) return null;
-
+  const renderNearbyItem = ({ item }) => {
+    if (!item || !item.user_id) {
+      console.warn('[NewChatScreen] Item nearby sans ID détecté:', item);
+      return null;
+    }
+    const fullName = `${item.first_name || ''} ${item.last_name || ''}`.trim();
+    const imageUrl = getImageUrl(item.avatar_url);
     return (
-      <View style={styles.suggestionsContainer}>
-        <View style={styles.quickActions}>
-          <TouchableOpacity
-            style={styles.quickAction}
-            onPress={() => {
-              Alert.alert('Nouveau groupe', 'Créer un nouveau groupe de discussion');
-            }}
-          >
-            <View style={[styles.quickActionIcon, { backgroundColor: '#667eea' }]}>
-              <Ionicons name="people" size={20} color="white" />
-            </View>
-            <Text style={styles.quickActionText}>Nouveau groupe</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.quickAction}
-            onPress={() => {
-              Alert.alert('Contact', 'Ajouter un nouveau contact');
-            }}
-          >
-            <View style={[styles.quickActionIcon, { backgroundColor: '#10b981' }]}>
-              <Ionicons name="person-add" size={20} color="white" />
-            </View>
-            <Text style={styles.quickActionText}>Ajouter contact</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.quickAction}
-            onPress={() => {
-              Alert.alert('Invitation', 'Inviter des amis à rejoindre l\'app');
-            }}
-          >
-            <View style={[styles.quickActionIcon, { backgroundColor: '#f59e0b' }]}>
-              <Ionicons name="share" size={20} color="white" />
-            </View>
-            <Text style={styles.quickActionText}>Inviter amis</Text>
-          </TouchableOpacity>
-        </View>
-
-        {activeTab === 'groups' && suggestedGroups.length > 0 && (
-          <View style={styles.suggestedGroupsContainer}>
-            <Text style={styles.suggestedTitle}>Groupes suggérés</Text>
-            {suggestedGroups.map((group, index) => (
-              <View key={`suggested-group-${group.id || index}-${Math.random()}`}>
-                {renderGroupItem({ item: group })}
+      <TouchableOpacity
+        style={styles.nearbyItem}
+        onPress={() => startChat(item.user_id)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.nearbyContent}>
+          <View style={styles.avatarContainer}>
+            {imageUrl ? (
+              <Image source={{ uri: imageUrl }} style={styles.contactAvatar} />
+            ) : (
+              <View style={[styles.contactAvatar, styles.placeholderAvatar]}>
+                <Text style={styles.placeholderText}>
+                  {fullName.split(' ').map(name => name.charAt(0)).join('').toUpperCase()}
+                </Text>
               </View>
-            ))}
+            )}
+            <View style={styles.distanceIndicator}>
+              <Text style={styles.distanceText}>{item.distance}m</Text>
+            </View>
           </View>
-        )}
+          <View style={styles.nearbyInfo}>
+            <Text style={styles.nearbyName}>{fullName}</Text>
+            <Text style={styles.nearbyStatus} numberOfLines={1}>
+              {item.status || 'Aucun statut'}
+            </Text>
+            <View style={styles.nearbyMeta}>
+              <Ionicons name="location" size={12} color="#667eea" />
+              <Text style={styles.nearbyDistance}>À {item.distance}m</Text>
+            </View>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderSectionHeader = ({ section }) => {
+    if (!showSuggestions) return null;
+    const onlineCount = section.data.filter(contact => contact.isOnline).length;
+    return (
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>
+          {section.title} {onlineCount > 0 && `(${onlineCount} en ligne)`}
+        </Text>
+        <Text style={styles.sectionCount}>
+          {section.data.length} {section.data.length > 1 ? 'contacts' : 'contact'}
+        </Text>
       </View>
     );
   };
 
-  const renderFloatingButton = () => {
-    if (selectedContacts.size === 0) return null;
+  const renderEmptyState = () => (
+    <View style={styles.emptyState}>
+      <Ionicons name="people-outline" size={64} color="#cbd5e1" />
+      <Text style={styles.emptyStateTitle}>
+        {searchQuery ? 'Aucun résultat' : 'Aucun contact'}
+      </Text>
+      <Text style={styles.emptyStateSubtitle}>
+        {searchQuery
+          ? 'Essayez d\'autres mots-clés'
+          : 'Ajoutez des contacts pour commencer à discuter'}
+      </Text>
+    </View>
+  );
 
+  const renderFloatingActionButton = () => {
+    if (selectedContacts.size === 0) return null;
     return (
-      <Animated.View
-        style={[
-          styles.floatingButton,
-          {
-            opacity: fadeAnim,
-            transform: [{ translateY: slideAnim }]
-          }
-        ]}
+      <TouchableOpacity
+        style={styles.floatingActionButton}
+        onPress={() => startChat()}
+        activeOpacity={0.8}
       >
-        <TouchableOpacity
-          onPress={() => startChat()}
-          activeOpacity={0.8}
+        <LinearGradient
+          colors={['#667eea', '#764ba2']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={styles.fab}
         >
-          <LinearGradient
-            colors={['#667eea', '#764ba2']}
-            style={styles.floatingButtonGradient}
-          >
-            <View style={styles.floatingButtonContent}>
-              <Ionicons
-                name={selectedContacts.size > 1 ? "people" : "chatbubble"}
-                size={20}
-                color="white"
-              />
-              <Text style={styles.floatingButtonText}>
-                {selectedContacts.size > 1
-                  ? `Créer groupe (${selectedContacts.size})`
-                  : 'Démarrer chat'
-                }
-              </Text>
-            </View>
-          </LinearGradient>
-        </TouchableOpacity>
-      </Animated.View>
+          <Ionicons name="chatbubble" size={24} color="white" />
+          <Text style={styles.fabText}>{selectedContacts.size}</Text>
+        </LinearGradient>
+      </TouchableOpacity>
     );
   };
 
@@ -589,155 +768,207 @@ const NewChatScreen = () => {
       return (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#667eea" />
-          <Text style={styles.loadingText}>Recherche en cours...</Text>
+          <Text style={styles.loadingText}>Chargement des contacts...</Text>
         </View>
       );
     }
-
     if (activeTab === 'contacts') {
       return (
         <SectionList
           sections={filteredContacts}
-          keyExtractor={(item, index) => `contact-${item.id || index}-${Math.random()}`}
+          keyExtractor={(item) => item.user_id?.toString() || Math.random().toString()}
           renderItem={renderContactItem}
           renderSectionHeader={renderSectionHeader}
-          contentContainerStyle={styles.listContainer}
+          ListEmptyComponent={renderEmptyState}
+          style={styles.contactsList}
+          contentContainerStyle={styles.contactsListContent}
           showsVerticalScrollIndicator={false}
-          ListHeaderComponent={renderSuggestions}
-          stickySectionHeadersEnabled={false}
+          refreshing={isRefreshing}
+          onRefresh={refreshContacts}
+          ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
         />
       );
     }
-
     if (activeTab === 'groups') {
       return (
         <FlatList
           data={suggestedGroups}
-          keyExtractor={(item, index) => `group-${item.id || index}-${Math.random()}`}
+          keyExtractor={(item) => item.id?.toString() || Math.random().toString()}
           renderItem={renderGroupItem}
-          contentContainerStyle={styles.listContainer}
+          ListEmptyComponent={() => (
+            <View style={styles.emptyState}>
+              <Ionicons name="people-circle-outline" size={64} color="#cbd5e1" />
+              <Text style={styles.emptyStateTitle}>Aucun groupe</Text>
+              <Text style={styles.emptyStateSubtitle}>
+                Créez un groupe pour discuter avec plusieurs personnes
+              </Text>
+            </View>
+          )}
+          style={styles.contactsList}
+          contentContainerStyle={styles.contactsListContent}
           showsVerticalScrollIndicator={false}
-          ListHeaderComponent={renderSuggestions}
+          ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
         />
       );
     }
-
     if (activeTab === 'nearby') {
       return (
-        <View style={styles.nearbyContainer}>
-          <View style={styles.nearbyIcon}>
-            <Ionicons name="location" size={48} color="#94a3b8" />
-          </View>
-          <Text style={styles.nearbyTitle}>Personnes à proximité</Text>
-          <Text style={styles.nearbyDescription}>
-            Activez votre localisation pour découvrir les personnes près de vous
-          </Text>
-          <TouchableOpacity style={styles.enableLocationButton}>
-            <LinearGradient
-              colors={['#667eea', '#764ba2']}
-              style={styles.enableLocationGradient}
-            >
-              <Text style={styles.enableLocationText}>Activer la localisation</Text>
-            </LinearGradient>
-          </TouchableOpacity>
-        </View>
+        <FlatList
+          data={[]}
+          keyExtractor={(item) => item.user_id?.toString() || Math.random().toString()}
+          renderItem={renderNearbyItem}
+          ListEmptyComponent={() => (
+            <View style={styles.emptyState}>
+              <Ionicons name="location-outline" size={64} color="#cbd5e1" />
+              <Text style={styles.emptyStateTitle}>Aucune personne à proximité</Text>
+              <Text style={styles.emptyStateSubtitle}>
+                Activez la localisation pour découvrir des personnes près de vous
+              </Text>
+            </View>
+          )}
+          style={styles.contactsList}
+          contentContainerStyle={styles.contactsListContent}
+          showsVerticalScrollIndicator={false}
+          ItemSeparatorComponent={() => <View style={styles.itemSeparator} />}
+        />
       );
     }
+    return null;
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      {renderHeader()}
-
-      <KeyboardAvoidingView
-        style={styles.content}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      <LinearGradient
+        colors={['#f8fafc', '#e2e8f0']}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+        style={styles.gradientBackground}
       >
-        <Animated.View
-          style={[
-            styles.contentAnimated,
-            {
-              opacity: fadeAnim,
-              transform: [{ translateY: slideAnim }]
-            }
-          ]}
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.keyboardAvoidingView}
         >
-          {renderContent()}
-        </Animated.View>
-      </KeyboardAvoidingView>
-
-      {renderFloatingButton()}
+          <Animated.View
+            style={[
+              styles.content,
+              {
+                opacity: fadeAnim,
+                transform: [{ translateY: slideAnim }],
+              },
+            ]}
+          >
+            {renderHeader()}
+            {renderContent()}
+          </Animated.View>
+        </KeyboardAvoidingView>
+      </LinearGradient>
+      {renderFloatingActionButton()}
     </SafeAreaView>
   );
 };
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f8fafc',
+  },
+  gradientBackground: {
+    flex: 1,
+  },
+  keyboardAvoidingView: {
+    flex: 1,
+  },
+  content: {
+    flex: 1,
   },
   header: {
     backgroundColor: 'white',
-    paddingBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
   headerTop: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 15,
+    marginBottom: 16,
   },
   backButton: {
-    padding: 5,
+    padding: 8,
+  },
+  headerTitleContainer: {
+    flex: 1,
+    alignItems: 'center',
   },
   headerTitle: {
+    top:20,
     fontSize: 20,
-    fontWeight: '600',
+    fontWeight: 'bold',
     color: '#1e293b',
   },
-  moreButton: {
-    padding: 5,
+  realtimeIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 4,
+  },
+  realtimeDot: {
+    width: 6,
+    top: 10,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#10b981',
+    marginRight: 4,
+  },
+  realtimeText: {
+    top: 10,
+    fontSize: 10,
+    color: '#10b981',
+    fontWeight: '500',
+  },
+  refreshButton: {
+    padding: 8,
   },
   searchContainer: {
-    paddingHorizontal: 20,
-    paddingBottom: 15,
+    marginBottom: 16,
   },
   searchInputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#f1f5f9',
-    borderRadius: 25,
-    paddingHorizontal: 15,
-    paddingVertical: 10,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   searchInput: {
     flex: 1,
-    marginLeft: 10,
+    marginLeft: 8,
     fontSize: 16,
     color: '#1e293b',
   },
   clearButton: {
-    padding: 5,
+    padding: 4,
   },
   tabsContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 20,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 12,
+    padding: 4,
   },
   tab: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    borderRadius: 20,
-    marginHorizontal: 5,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 8,
   },
   activeTab: {
-    backgroundColor: '#f0f4ff',
+    backgroundColor: 'white',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   tabText: {
     fontSize: 14,
@@ -747,54 +978,47 @@ const styles = StyleSheet.create({
   },
   activeTabText: {
     color: '#667eea',
+    fontWeight: '600',
   },
-  content: {
+  contactsList: {
     flex: 1,
   },
-  contentAnimated: {
-    flex: 1,
-  },
-  listContainer: {
-    paddingTop: 10,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 50,
-  },
-  loadingText: {
-    fontSize: 16,
-    color: '#64748b',
-    marginTop: 10,
+  contactsListContent: {
+    paddingHorizontal: 16,
+    paddingBottom: 20,
   },
   sectionHeader: {
-    backgroundColor: '#f8fafc',
-    paddingHorizontal: 20,
-    paddingVertical: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 4,
+    marginTop: 16,
   },
   sectionTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#1e293b',
+  },
+  sectionCount: {
     fontSize: 14,
-    fontWeight: '600',
-    color: '#64748b',
-    textTransform: 'uppercase',
+    color: '#94a3b8',
   },
   contactItem: {
     backgroundColor: 'white',
-    marginHorizontal: 20,
-    marginVertical: 2,
-    borderRadius: 15,
-    padding: 15,
+    borderRadius: 16,
+    padding: 16,
+    marginVertical: 4,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   selectedContactItem: {
     backgroundColor: '#f0f4ff',
-    borderColor: '#667eea',
     borderWidth: 2,
+    borderColor: '#667eea',
   },
   contactContent: {
     flexDirection: 'row',
@@ -802,73 +1026,79 @@ const styles = StyleSheet.create({
   },
   avatarContainer: {
     position: 'relative',
-    marginRight: 15,
+    marginRight: 16,
   },
   contactAvatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#e2e8f0',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#f1f5f9',
   },
   placeholderAvatar: {
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#667eea',
   },
   placeholderText: {
     color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
-  onlineIndicator: {
+  statusIndicator: {
     position: 'absolute',
     bottom: 2,
     right: 2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: '#10b981',
+    width: 16,
+    height: 16,
+    borderRadius: 8,
     borderWidth: 2,
     borderColor: 'white',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  onlinePulse: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: 'white',
+    opacity: 0.8,
   },
   selectionOverlay: {
     position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    borderRadius: 25,
-    backgroundColor: 'rgba(102, 126, 234, 0.8)',
-    justifyContent: 'center',
+    top: -2,
+    right: -2,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#667eea',
     alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: 'white',
   },
   contactInfo: {
     flex: 1,
   },
   contactHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     marginBottom: 4,
   },
   contactName: {
     fontSize: 16,
     fontWeight: '600',
     color: '#1e293b',
+    flex: 1,
   },
-  onlineStatus: {
+  connectionStatus: {
     fontSize: 12,
-    color: '#10b981',
     fontWeight: '500',
-  },
-  lastSeen: {
-    fontSize: 12,
-    color: '#94a3b8',
   },
   contactStatus: {
     fontSize: 14,
     color: '#64748b',
-    marginBottom: 4,
+    marginBottom: 8,
   },
   contactMeta: {
     flexDirection: 'row',
@@ -879,42 +1109,58 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     marginLeft: 4,
   },
+  realtimeIndicatorSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 12,
+  },
+  realtimeDotSmall: {
+    width: 4,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#10b981',
+    marginRight: 2,
+  },
+  realtimeTextSmall: {
+    fontSize: 10,
+    color: '#10b981',
+    fontWeight: '500',
+  },
   infoButton: {
-    padding: 5,
+    padding: 8,
   },
   groupItem: {
     backgroundColor: 'white',
-    marginHorizontal: 20,
-    marginVertical: 2,
-    borderRadius: 15,
-    padding: 15,
+    borderRadius: 16,
+    padding: 16,
+    marginVertical: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
     flexDirection: 'row',
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
   },
   groupAvatarContainer: {
     position: 'relative',
-    marginRight: 15,
+    marginRight: 16,
   },
   groupAvatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: '#e2e8f0',
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#f1f5f9',
   },
   groupTypeIndicator: {
     position: 'absolute',
-    bottom: -2,
-    right: -2,
+    bottom: 2,
+    right: 2,
     width: 20,
     height: 20,
     borderRadius: 10,
-    justifyContent: 'center',
     alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 2,
     borderColor: 'white',
   },
@@ -930,108 +1176,132 @@ const styles = StyleSheet.create({
   groupMembers: {
     fontSize: 14,
     color: '#64748b',
-    marginBottom: 2,
-  },
-  groupMemberCount: {
-    fontSize: 12,
-    color: '#94a3b8',
-  },
-  suggestionsContainer: {
-    paddingBottom: 20,
-  },
-  quickActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingHorizontal: 20,
-    paddingVertical: 20,
-  },
-  quickAction: {
-    alignItems: 'center',
-  },
-  quickActionIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    justifyContent: 'center',
-    alignItems: 'center',
     marginBottom: 8,
   },
-  quickActionText: {
-    fontSize: 12,
-    color: '#64748b',
-    fontWeight: '500',
-  },
-  suggestedGroupsContainer: {
-    paddingTop: 20,
-  },
-  suggestedTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1e293b',
-    paddingHorizontal: 20,
-    marginBottom: 10,
-  },
-  nearbyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  nearbyIcon: {
-    marginBottom: 20,
-  },
-  nearbyTitle: {
-    fontSize: 20,
-    fontWeight: '600',
-    color: '#1e293b',
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-  nearbyDescription: {
-    fontSize: 16,
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 30,
-  },
-  enableLocationButton: {
-    borderRadius: 25,
-    overflow: 'hidden',
-  },
-  enableLocationGradient: {
-    paddingHorizontal: 30,
-    paddingVertical: 15,
-    borderRadius: 25,
-  },
-  enableLocationText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: 'white',
-  },
-  floatingButton: {
-    position: 'absolute',
-    bottom: 30,
-    left: 20,
-    right: 20,
-    borderRadius: 25,
-    overflow: 'hidden',
-  },
-  floatingButtonGradient: {
-    borderRadius: 25,
-  },
-  floatingButtonContent: {
+  groupMeta: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 15,
-    paddingHorizontal: 25,
   },
-  floatingButtonText: {
+  groupTime: {
+    fontSize: 12,
+    color: '#94a3b8',
+    marginLeft: 4,
+  },
+  nearbyItem: {
+    backgroundColor: 'white',
+    borderRadius: 16,
+    padding: 16,
+    marginVertical: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  nearbyContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  distanceIndicator: {
+    position: 'absolute',
+    bottom: -4,
+    right: -4,
+    backgroundColor: '#667eea',
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderWidth: 2,
+    borderColor: 'white',
+  },
+  distanceText: {
+    fontSize: 10,
+    color: 'white',
+    fontWeight: '600',
+  },
+  nearbyInfo: {
+    flex: 1,
+  },
+  nearbyName: {
     fontSize: 16,
     fontWeight: '600',
+    color: '#1e293b',
+    marginBottom: 4,
+  },
+  nearbyStatus: {
+    fontSize: 14,
+    color: '#64748b',
+    marginBottom: 8,
+  },
+  nearbyMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  nearbyDistance: {
+    fontSize: 12,
+    color: '#667eea',
+    marginLeft: 4,
+    fontWeight: '500',
+  },
+  itemSeparator: {
+    height: 1,
+    backgroundColor: '#f1f5f9',
+    marginHorizontal: 16,
+  },
+  emptyState: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 64,
+  },
+  emptyStateTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#64748b',
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  emptyStateSubtitle: {
+    fontSize: 14,
+    color: '#94a3b8',
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 64,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#64748b',
+    marginTop: 16,
+  },
+  floatingActionButton: {
+    position: 'absolute',
+    bottom: 24,
+    right: 24,
+    borderRadius: 28,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  fab: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+  },
+  fabText: {
     color: 'white',
-    marginLeft: 10,
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginLeft: 4,
   },
 });
 
-export default NewChatScreen; 
+export default NewChatScreen;

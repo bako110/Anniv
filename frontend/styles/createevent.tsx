@@ -347,6 +347,12 @@ const Createeventstyles = StyleSheet.create({
   bottomSpacer: {
     height: 40,
   },
+  eventVideo: {
+  width: '100%',
+  height: 200,
+  borderRadius: 8,
+},
+
 });
 
 export default Createeventstyles;
