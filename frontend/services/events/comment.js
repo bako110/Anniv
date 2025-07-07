@@ -1,7 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { API_BASE_URL } from '../../constants/config';
 
-const API_BASE_URL = 'http://192.168.11.120:8000'; // Assurez-vous que cette URL correspond à celle de votre backend
 
 class CommentService {
   async getAuthToken() {

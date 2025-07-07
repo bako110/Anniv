@@ -18,7 +18,7 @@ import { login } from '../../../services/auth';
 import { getProfile } from '../../../services/profile';
 import { STORAGE_KEYS } from '../../../constants/storageKeys';
 import { setItem } from '../../../utils/storage';
-
+import { decode as atob } from 'base-64';
 
 const { width, height } = Dimensions.get('window');
 
@@ -55,165 +55,283 @@ export default function LoginScreen() {
     return phone.replace(/[\s\-\(\)]/g, '');
   };
 
-  // Méthode de debug pour vérifier le token
-  const debugToken = async () => {
+
+// Méthode de debug pour vérifier le token - VERSION AMÉLIORÉE
+    const debugToken = async () => {
     try {
-      console.log('🔍 Clé utilisée:', STORAGE_KEYS.AUTH_TOKEN);
-      const token = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
-      console.log('🔍 Token trouvé:', token ? 'OUI' : 'NON');
-      console.log('🔍 Token length:', token ? token.length : 0);
-      console.log('🔍 Token preview:', token ? token.substring(0, 20) + '...' : 'null');
+      console.log('🔍 === DÉBUT DEBUG TOKEN ===');
+      let token = null;
+      const directToken = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+      console.log('🔍 Token direct AsyncStorage:', directToken ? 'TROUVÉ' : 'INTROUVABLE');
+      const allKeys = await AsyncStorage.getAllKeys();
+      console.log('🔍 Toutes les clés disponibles:', allKeys);
+      const authKeys = allKeys.filter(key => key.includes('AUTH') || key.includes('token'));
+      console.log('🔍 Clés liées à AUTH/token:', authKeys);
+      console.log('🔍 Clé STORAGE_KEYS.AUTH_TOKEN:', STORAGE_KEYS.AUTH_TOKEN);
+
+      if (directToken) {
+        token = directToken;
+        console.log('🔍 Token trouvé - Longueur:', token.length);
+        console.log('🔍 Token preview:', token.substring(0, 50) + '...');
+        const parts = token.split('.');
+        console.log('🔍 Parties JWT:', parts.length);
+
+        if (parts.length === 3) {
+          try {
+            const payload = JSON.parse(atob(parts[1]));
+            console.log('🔍 Payload JWT:', {
+              sub: payload.sub,
+              exp: payload.exp,
+              iat: payload.iat,
+              user_id: payload.user_id,
+              role: payload.role
+            });
+            const now = Math.floor(Date.now() / 1000);
+            const isExpired = payload.exp < now;
+            console.log('🔍 Token expiré:', isExpired);
+            if (isExpired) {
+              console.warn('🔍 ⚠️  TOKEN EXPIRÉ!');
+            }
+          } catch (parseError) {
+            console.error('🔍 Erreur décodage payload:', parseError);
+          }
+        }
+      } else {
+        console.log('🔍 ❌ AUCUN TOKEN TROUVÉ');
+      }
+
+      console.log('🔍 === FIN DEBUG TOKEN ===');
       return token;
+
     } catch (error) {
       console.error('🔍 Erreur debug token:', error);
       return null;
     }
   };
+  const handleLogin = async () => {
+    const identifier = loginMethod === 'email' 
+      ? sanitizeInput(email) 
+      : formatPhoneNumber(phone.trim());
 
-
-  
-const handleLogin = async () => {
-  const identifier = loginMethod === 'email' 
-    ? sanitizeInput(email) 
-    : formatPhoneNumber(phone.trim());
-
-  if (!identifier || !password) {
-    Alert.alert('Erreur de validation', 'Veuillez remplir tous les champs obligatoires');
-    return;
-  }
-
-  if (password.length < 6) {
-    Alert.alert('Erreur de validation', 'Le mot de passe doit contenir au moins 6 caractères');
-    return;
-  }
-
-  if (loginMethod === 'email' && !validateEmail(identifier)) {
-    Alert.alert('Erreur de validation', 'Veuillez entrer une adresse email valide');
-    return;
-  }
-
-  if (loginMethod === 'phone' && !validatePhone(identifier)) {
-    Alert.alert('Erreur de validation', 'Veuillez entrer un numéro de téléphone valide');
-    return;
-  }
-
-  setIsLoading(true);
-  let loginSuccessful = false;
-
-  try {
-    const loginData = {
-      identifier,
-      password,
-      loginType: loginMethod,
-      ...(loginMethod === 'email' ? { email: identifier } : { phone: identifier }),
-    };
-
-    const response = await login(loginData.identifier, loginData.password, loginData.loginType);
-
-    if (!response || !response.access_token || !response.user) {
-      throw new Error('Réponse du serveur invalide ou incomplète');
+    // Validation des champs
+    if (!identifier || !password) {
+      Alert.alert('Erreur de validation', 'Veuillez remplir tous les champs obligatoires');
+      return;
+    }
+    if (password.length < 6) {
+      Alert.alert('Erreur de validation', 'Le mot de passe doit contenir au moins 6 caractères');
+      return;
+    }
+    if (loginMethod === 'email' && !validateEmail(identifier)) {
+      Alert.alert('Erreur de validation', 'Veuillez entrer une adresse email valide');
+      return;
+    }
+    if (loginMethod === 'phone' && !validatePhone(identifier)) {
+      Alert.alert('Erreur de validation', 'Veuillez entrer un numéro de téléphone valide');
+      return;
     }
 
-    const userFromResponse = response.user;
-    let identifierMatch = false;
-
-    if (loginMethod === 'email') {
-      identifierMatch = userFromResponse.email && sanitizeInput(userFromResponse.email) === identifier;
-    } else {
-      identifierMatch = formatPhoneNumber(userFromResponse.phone || '') === identifier;
-    }
-
-    if (!identifierMatch) {
-      throw new Error('Erreur de sécurité: les informations de connexion ne correspondent pas');
-    }
-
-    loginSuccessful = true;
+    setIsLoading(true);
 
     try {
+      // Nettoyage préalable du stockage
+      await cleanupStorage();
+
+      // Prépare les données login
+      const loginData = {
+        identifier,
+        password,
+        loginType: loginMethod,
+        ...(loginMethod === 'email' ? { email: identifier } : { phone: identifier }),
+      };
+
+      console.log('[LOGIN] Tentative de connexion avec:', {
+        identifier,
+        loginType: loginMethod,
+        timestamp: new Date().toISOString()
+      });
+
+      // Appel API login
+      const response = await login(loginData.identifier, loginData.password, loginData.loginType);
+
+      console.log('[LOGIN] Réponse serveur:', {
+        hasToken: !!response?.access_token,
+        tokenLength: response?.access_token?.length || 0,
+        tokenPreview: response?.access_token?.substring(0, 20) + '...' || 'N/A',
+        hasUser: !!response?.user,
+        userId: response?.user?.id || 'N/A'
+      });
+
+      // Validation stricte de la réponse
+      if (!response) {
+        throw new Error('Aucune réponse du serveur');
+      }
+      if (!response.access_token) {
+        throw new Error('Token d\'accès manquant dans la réponse');
+      }
+      if (!response.user) {
+        throw new Error('Informations utilisateur manquantes dans la réponse');
+      }
+      if (!response.user.id) {
+        throw new Error('ID utilisateur manquant dans la réponse');
+      }
+
+      // Validation du token (format JWT basique)
+      const tokenParts = response.access_token.split('.');
+      if (tokenParts.length !== 3) {
+        throw new Error('Format de token invalide');
+      }
+
+      // Vérifie que l'identifiant reçu correspond bien à celui envoyé
+      const userFromResponse = response.user;
+      let identifierMatch = false;
+
+      if (loginMethod === 'email') {
+        identifierMatch = userFromResponse.email && sanitizeInput(userFromResponse.email) === identifier;
+      } else {
+        identifierMatch = formatPhoneNumber(userFromResponse.phone || '') === identifier;
+      }
+      if (!identifierMatch) {
+        throw new Error('Erreur de sécurité: les informations de connexion ne correspondent pas');
+      }
+
+      // Stockage sécurisé et cohérent
+      console.log('[LOGIN] Début du stockage des données...');
+      
+      // Stockage du token - PRIORITÉ ABSOLUE
       await setItem('AUTH_TOKEN', response.access_token);
-      await setItem('USER_INFO', userFromResponse);
+      console.log('[LOGIN] Token stocké avec succès');
+
+      // Vérification immédiate du stockage du token
+      const storedToken = await debugToken();
+      if (!storedToken || storedToken !== response.access_token) {
+        throw new Error('Échec du stockage du token');
+      }
+
+      // Stockage des autres données utilisateur
+      await setItem('USER_INFO', JSON.stringify(userFromResponse));
       await setItem('LOGIN_METHOD', loginMethod);
       await setItem('USER_IDENTIFIER', identifier);
+      const userId = userFromResponse.id || userFromResponse.user_id;
+      if (!userId) {
+        console.error('❌ Aucun ID utilisateur trouvé dans la réponse');
+      } else {
+        await setItem('USER_ID', userId.toString());
+      }
 
-      if (userFromResponse.email) await setItem('USER_EMAIL', sanitizeInput(userFromResponse.email));
-      if (userFromResponse.phone) await setItem('USER_PHONE', formatPhoneNumber(userFromResponse.phone));
-    } catch (storageError) {
-      console.warn('⚠️ Problème lors du stockage des données utilisateur', storageError);
-    }
 
-    console.log('Authentification réussie, récupération du profil...');
-    await debugToken();
+      if (userFromResponse.email) {
+        await setItem('USER_EMAIL', sanitizeInput(userFromResponse.email));
+      }
+      if (userFromResponse.phone) {
+        await setItem('USER_PHONE', formatPhoneNumber(userFromResponse.phone));
+      }
 
-    try {
+      console.log('[LOGIN] Toutes les données utilisateur stockées avec succès');
+
+      // Récupération du profil utilisateur
       const profileIdentifier = loginMethod === 'email' ? userFromResponse.email : userFromResponse.phone;
-      if (!profileIdentifier) throw new Error(`Identifiant ${loginMethod} non disponible`);
+      if (!profileIdentifier) {
+        throw new Error(`Identifiant ${loginMethod} non disponible pour récupérer le profil`);
+      }
 
       const encodedIdentifier = encodeURIComponent(profileIdentifier);
+      console.log('[LOGIN] Récupération du profil pour:', encodedIdentifier);
+      
       const userProfile = await getProfile(encodedIdentifier, loginMethod);
 
-      if (userProfile) {
-        await setItem('USER_PROFILE', userProfile);
-        console.log('Profil utilisateur récupéré avec succès');
+      if (!userProfile) {
+        Alert.alert(
+          'Profil introuvable',
+          'Votre profil utilisateur est introuvable. Veuillez contacter l\'administration.',
+          [{ text: 'OK' }]
+        );
+        setIsLoading(false);
+        return;
       }
 
-    } catch (profileError) {
-      console.log('Erreur lors de la récupération du profil:', profileError.message || profileError);
+      await setItem('USER_PROFILE', JSON.stringify(userProfile));
+      console.log('[LOGIN] Profil utilisateur récupéré et stocké avec succès');
+
+      // Vérification finale complète
+      const finalToken = await debugToken();
+      console.log('[LOGIN] Vérification finale - Token présent:', !!finalToken);
+
+      Alert.alert(
+        'Connexion réussie',
+        userFromResponse.name ? `Bienvenue ${userFromResponse.name} !` : 'Bienvenue !',
+        [{ 
+          text: 'OK', 
+          onPress: () => {
+            console.log('[LOGIN] Redirection vers home');
+            router.replace('/screens/social/home');
+          }
+        }]
+      );
+
+    } catch (error) {
+      console.error('[LOGIN] Erreur de connexion:', error);
+
+      // Nettoyage du stockage en cas d'échec
+      await cleanupStorage();
+
+      // Messages d'erreur user-friendly
+      let errorMessage = 'Une erreur est survenue lors de la connexion';
+
+      const status = error.status || error.response?.status;
+
+      if (error.message?.includes('sécurité')) {
+        errorMessage = 'Erreur de sécurité détectée. Veuillez réessayer.';
+      } else if (error.message?.includes('Token')) {
+        errorMessage = 'Erreur de token. Veuillez réessayer.';
+      } else if (error.message?.includes('stockage')) {
+        errorMessage = 'Erreur de stockage. Veuillez réessayer.';
+      } else if (status === 401) {
+        errorMessage = loginMethod === 'email' 
+          ? 'Email ou mot de passe incorrect' 
+          : 'Numéro de téléphone ou mot de passe incorrect';
+      } else if (status === 404) {
+        errorMessage = loginMethod === 'email'
+          ? 'Aucun compte associé à cette adresse email'
+          : 'Aucun compte associé à ce numéro de téléphone';
+      } else if (status === 422) {
+        errorMessage = 'Données invalides. Vérifiez vos informations.';
+      } else if (status === 0 || error.code === 'NETWORK_ERROR') {
+        errorMessage = 'Erreur réseau. Vérifiez votre connexion internet.';
+      } else if (status === 500) {
+        errorMessage = 'Erreur du serveur. Veuillez réessayer plus tard.';
+      } else if (status === 429) {
+        errorMessage = 'Trop de tentatives. Patientez avant de réessayer.';
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+
+      Alert.alert('Erreur de connexion', errorMessage);
+
+    } finally {
+      setIsLoading(false);
     }
+  };
 
-    Alert.alert(
-      'Connexion réussie',
-      userFromResponse.name ? `Bienvenue ${userFromResponse.name} !` : 'Bienvenue !',
-      [{ text: 'OK', onPress: () => router.replace('/screens/social/home') }]
-    );
-
-  } catch (error: any) {
-    console.error('Erreur de connexion:', error);
-
-    if (!loginSuccessful) {
-      const keysToRemove: StorageKey[] = [
+  // Fonction de nettoyage du stockage
+  const cleanupStorage = async () => {
+    try {
+      const keysToRemove = [
         'AUTH_TOKEN', 'USER_INFO', 'USER_PROFILE',
-        'USER_IDENTIFIER', 'USER_EMAIL', 'USER_PHONE', 'LOGIN_METHOD'
+        'USER_IDENTIFIER', 'USER_EMAIL', 'USER_PHONE', 
+        'LOGIN_METHOD', 'USER_ID'
       ];
-
-      try {
-        await AsyncStorage.multiRemove(keysToRemove.map(k => STORAGE_KEYS[k]));
-      } catch (cleanupError) {
-        console.warn('Erreur nettoyage stockage:', cleanupError);
+      
+      // Utilise ta fonction setItem pour supprimer (avec null)
+      for (const key of keysToRemove) {
+        await setItem(key, null);
       }
+      
+      console.log('[LOGIN] Stockage nettoyé avec succès');
+    } catch (cleanupError) {
+      console.warn('[LOGIN] Erreur nettoyage stockage:', cleanupError);
     }
-
-    let errorMessage = 'Une erreur est survenue lors de la connexion';
-
-    const status = error.status || error.response?.status;
-
-    if (error.message?.includes('sécurité')) {
-      errorMessage = 'Erreur de sécurité détectée. Veuillez réessayer.';
-    } else if (status === 401) {
-      errorMessage = loginMethod === 'email' 
-        ? 'Email ou mot de passe incorrect' 
-        : 'Numéro de téléphone ou mot de passe incorrect';
-    } else if (status === 404) {
-      errorMessage = loginMethod === 'email'
-        ? 'Aucun compte associé à cette adresse email'
-        : 'Aucun compte associé à ce numéro de téléphone';
-    } else if (status === 422) {
-      errorMessage = 'Données invalides. Vérifiez vos informations.';
-    } else if (status === 0 || error.code === 'NETWORK_ERROR') {
-      errorMessage = 'Erreur réseau. Vérifiez votre connexion internet.';
-    } else if (status === 500) {
-      errorMessage = 'Erreur du serveur. Veuillez réessayer plus tard.';
-    } else if (status === 429) {
-      errorMessage = 'Trop de tentatives. Patientez avant de réessayer.';
-    } else if (error.message) {
-      errorMessage = error.message;
-    }
-
-    Alert.alert('Erreur de connexion', errorMessage);
-
-  } finally {
-    await setIsLoading(false);
-  }
-};
+  };
 
 
   // Gestionnaire de changement de méthode de connexion avec nettoyage
@@ -442,6 +560,8 @@ const handleLogin = async () => {
     </View>
   );
 }
+
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,

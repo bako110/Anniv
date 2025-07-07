@@ -8,6 +8,7 @@ export const STORAGE_KEYS = {
   USER_PHONE: 'userPhone',
   PENDING_EVENTS: '@pending_events',
   CACHED_EVENTS: '@cached_events',
+  USER_ID: 'userId',
 } as const;
 
 export type StorageKey = keyof typeof STORAGE_KEYS;

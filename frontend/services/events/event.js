@@ -1,24 +1,24 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../../constants/storageKeys';
+import { API_BASE_URL } from '../../constants/config';
 
-const API_BASE_URL = 'http://192.168.11.120:8000';
 
 let authTokenCache = null;
 
 class EventService {
-  // ✅ Stocke le token en cache + dans AsyncStorage
+  // Stocke le token en cache + dans AsyncStorage
   async setAuthToken(token) {
     authTokenCache = token;
     await AsyncStorage.setItem(STORAGE_KEYS.AUTH_TOKEN, token);
   }
 
-  // ✅ Efface le token de partout
+  // Efface le token de partout
   async clearAuthToken() {
     authTokenCache = null;
     await AsyncStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
   }
 
-  // ✅ Récupère le token, avec possibilité de forcer une mise à jour
+  // Récupère le token, avec possibilité de forcer une mise à jour
   async getAuthToken(forceRefresh = false) {
     if (authTokenCache && !forceRefresh) return authTokenCache;
 
@@ -32,13 +32,13 @@ class EventService {
     }
   }
 
-  // ✅ Requête générique sécurisée
+  // Requête générique sécurisée
   async makeRequest(url, method = 'GET', body = null, contentType = 'application/json') {
     const token = await this.getAuthToken();
     const headers = { 'Content-Type': contentType };
-    
+
     if (token) headers['Authorization'] = `Bearer ${token}`;
-    
+
     const config = { method, headers };
     if (body) {
       config.body = contentType === 'application/json' ? JSON.stringify(body) : body;
@@ -54,7 +54,7 @@ class EventService {
     return response.json();
   }
 
-  // ✅ Crée un événement (multipart/form-data)
+  // Crée un événement (multipart/form-data)
   async createEvent(eventData) {
     try {
       const token = await this.getAuthToken(true); // force refresh du token
@@ -123,7 +123,7 @@ class EventService {
     }
   }
 
-  // ✅ Enregistre en local (hors ligne)
+  // Enregistre en local (hors ligne)
   async saveEventOffline(eventData) {
     try {
       const offlineEvents = await AsyncStorage.getItem('offline_events');
@@ -140,7 +140,7 @@ class EventService {
     }
   }
 
-  // ✅ Liste des événements avec filtres
+  // Liste des événements avec filtres
   async getEvents(page = 1, perPage = 20, filters = {}) {
     try {
       if (filters.date_from instanceof Date) filters.date_from = filters.date_from.toISOString();
@@ -213,6 +213,16 @@ class EventService {
     }
   }
 
+  async getEventDetails(eventId) {
+    try {
+      const result = await this.makeRequest(`/events/${eventId}`);
+      return { success: true, data: result };
+    } catch (error) {
+      console.error('Erreur récupération détails événement:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
   async getEventComments(eventId) {
     try {
       const result = await this.makeRequest(`/events/${eventId}/comments`);
@@ -226,8 +236,8 @@ class EventService {
   async addComment(eventId, commentData) {
     try {
       const result = await this.makeRequest(
-        `/events/${eventId}/comments`, 
-        'POST', 
+        `/events/${eventId}/comments`,
+        'POST',
         commentData
       );
       return { success: true, data: result };

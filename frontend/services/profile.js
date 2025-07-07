@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://192.168.11.120:8000'; // ⚠️ Mets l'IP de ton backend ici
+import {API_BASE_URL} from '../constants/config'
 
 const defaultHeaders = {
   'Accept': 'application/json',
@@ -62,13 +62,20 @@ export const getProfile = async (identifier) => {
   });
 };
 
+
+
 // ✏️ Mettre à jour un profil
+
 export const updateProfile = async (identifier, updates) => {
+  console.log('Envoi updateProfile avec identifier:', identifier);
+  console.log('Données envoyées:', updates);
+
   return apiRequest(`/users/profile/${normalizeIdentifier(identifier)}`, {
     method: 'PUT',
     body: JSON.stringify(updates),
   });
 };
+
 
 // 🗑️ Supprimer un profil
 export const deleteProfile = async (identifier) => {

@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   SafeAreaView,
   TextInput,
+  SectionList,
   FlatList,
   Image,
   Alert,
@@ -13,149 +14,128 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  SectionList,
   Animated,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons, MaterialIcons, Feather } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
+import { fetchUserFriends, searchUsers } from '../../../services/contacts';
+import { API_BASE_URL } from '@/constants/config';
+import { STORAGE_KEYS } from '@/constants/storageKeys';
+import { getUserStatus, updateUserStatus } from '@/services/status';
 
 const { width, height } = Dimensions.get('window');
-
-// Données d'exemple pour les contacts
-const contactsData = [
-  {
-    id: 'user1',
-    name: 'Marie Dubois',
-    avatar: 'https://images.unsplash.com/photo-1494790108755-2616b612b786?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 12 34 56 78',
-    isOnline: true,
-    lastSeen: null,
-    status: 'Développeuse passionnée',
-    mutualFriends: 12,
-    category: 'Favoris'
-  },
-  {
-    id: 'user2',
-    name: 'Pierre Martin',
-    avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 98 76 54 32',
-    isOnline: false,
-    lastSeen: '2h',
-    status: 'Designer UI/UX',
-    mutualFriends: 8,
-    category: 'Favoris'
-  },
-  {
-    id: 'user3',
-    name: 'Sophie Laurent',
-    avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 45 67 89 01',
-    isOnline: true,
-    lastSeen: null,
-    status: 'Chef de projet',
-    mutualFriends: 15,
-    category: 'Collègues'
-  },
-  {
-    id: 'user4',
-    name: 'Lucas Bernard',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 23 45 67 89',
-    isOnline: false,
-    lastSeen: '1j',
-    status: 'Étudiant en informatique',
-    mutualFriends: 3,
-    category: 'Amis'
-  },
-  {
-    id: 'user5',
-    name: 'Emma Rousseau',
-    avatar: 'https://images.unsplash.com/photo-1544725176-7c40e5a71c5e?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 78 90 12 34',
-    isOnline: true,
-    lastSeen: null,
-    status: 'Marketing digital',
-    mutualFriends: 7,
-    category: 'Collègues'
-  },
-  {
-    id: 'user6',
-    name: 'Thomas Petit',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 56 78 90 12',
-    isOnline: false,
-    lastSeen: '3h',
-    status: 'Photographe',
-    mutualFriends: 5,
-    category: 'Amis'
-  },
-  {
-    id: 'user7',
-    name: 'Julie Moreau',
-    avatar: 'https://images.unsplash.com/photo-1487412720507-e7ab37603c6f?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 34 56 78 90',
-    isOnline: true,
-    lastSeen: null,
-    status: 'Architecte',
-    mutualFriends: 10,
-    category: 'Amis'
-  },
-  {
-    id: 'user8',
-    name: 'Antoine Leroy',
-    avatar: 'https://images.unsplash.com/photo-1519244703995-f4e0f30006d5?w=80&h=80&fit=crop&crop=face',
-    phone: '+33 6 12 90 78 56',
-    isOnline: false,
-    lastSeen: '5h',
-    status: 'Ingénieur logiciel',
-    mutualFriends: 6,
-    category: 'Collègues'
-  }
-];
-
-// Groupes suggérés
-const suggestedGroups = [
-  {
-    id: 'group1',
-    name: 'Équipe Design',
-    avatar: 'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=80&h=80&fit=crop',
-    members: ['Marie Dubois', 'Pierre Martin', 'Sophie Laurent'],
-    memberCount: 8,
-    type: 'work'
-  },
-  {
-    id: 'group2',
-    name: 'Amis Lycée',
-    avatar: 'https://images.unsplash.com/photo-1529156069898-49953e39b3ac?w=80&h=80&fit=crop',
-    members: ['Lucas Bernard', 'Emma Rousseau', 'Thomas Petit'],
-    memberCount: 12,
-    type: 'friends'
-  },
-  {
-    id: 'group3',
-    name: 'Projet Mobile',
-    avatar: 'https://images.unsplash.com/photo-1556761175-b413da4baf72?w=80&h=80&fit=crop',
-    members: ['Julie Moreau', 'Antoine Leroy', 'Sophie Laurent'],
-    memberCount: 5,
-    type: 'work'
-  }
-];
 
 const NewChatScreen = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredContacts, setFilteredContacts] = useState([]);
   const [selectedContacts, setSelectedContacts] = useState(new Set());
   const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState('contacts'); // contacts, groups, nearby
+  const [activeTab, setActiveTab] = useState('contacts');
   const [showSuggestions, setShowSuggestions] = useState(true);
-  
+  const [userStatus, setUserStatus] = useState({ online_status: false, last_seen: null });
+
+  const [userId, setUserId] = useState(null);
+  const [token, setToken] = useState(null);
+
   const searchInputRef = useRef(null);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(50)).current;
 
+  // Fonction pour calculer le temps écoulé depuis last_seen
+  const calculateTimeSince = (lastSeenDate) => {
+    if (!lastSeenDate) return "longtemps";
+    
+    const now = new Date();
+    const lastSeen = new Date(lastSeenDate);
+    const diffInSeconds = Math.floor((now - lastSeen) / 1000);
+    
+    if (diffInSeconds < 60) return "à l'instant";
+    if (diffInSeconds < 3600) return `il y a ${Math.floor(diffInSeconds / 60)} min`;
+    if (diffInSeconds < 86400) return `il y a ${Math.floor(diffInSeconds / 3600)} h`;
+    if (diffInSeconds < 2592000) return `il y a ${Math.floor(diffInSeconds / 86400)} j`;
+    return "longtemps";
+  };
+
+  // Récupérer token et userId au montage
   useEffect(() => {
-    // Animation d'entrée
+    const loadAuthData = async () => {
+      try {
+        const storedToken = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+        const storedUserInfo = await AsyncStorage.getItem(STORAGE_KEYS.USER_INFO);
+        if (storedToken) setToken(storedToken);
+
+        if (storedUserInfo) {
+          const userInfo = JSON.parse(storedUserInfo);
+          if (userInfo?.id) {
+            setUserId(userInfo.id);
+            // Charger le statut de l'utilisateur
+            const status = await getUserStatus(userInfo.id, storedToken);
+            setUserStatus(status);
+          }
+        }
+      } catch (error) {
+        console.warn('Erreur récupération token ou userInfo:', error);
+      }
+    };
+
+    loadAuthData();
+  }, []);
+
+  // Mettre à jour le statut lorsque le composant est focus
+  useEffect(() => {
+    const updateStatus = async () => {
+      if (userId && token) {
+        try {
+          await updateUserStatus(userId, token, true);
+          const status = await getUserStatus(userId, token);
+          setUserStatus(status);
+        } catch (error) {
+          console.warn("Erreur mise à jour statut:", error);
+        }
+      }
+    };
+
+    updateStatus();
+
+    return () => {
+      if (userId && token) {
+        updateUserStatus(userId, token, false).catch(console.warn);
+      }
+    };
+  }, [userId, token]);
+
+  // Appeler filterContacts lorsque userId ou token change
+  useEffect(() => {
+    if (userId && token) {
+      filterContacts();
+    }
+  }, [userId, token]);
+
+  // Relancer filtre quand recherche ou onglet change
+  useEffect(() => {
+    if (userId && token) {
+      filterContacts();
+    }
+  }, [searchQuery, activeTab]);
+
+  // Fonction pour construire l'URL complète de l'image
+  const getImageUrl = (imageUrl) => {
+    if (!imageUrl) return null;
+
+    if (imageUrl.startsWith('http://') || imageUrl.startsWith('https://')) {
+      return imageUrl;
+    }
+
+    if (imageUrl.startsWith('/')) {
+      return `${API_BASE_URL}${imageUrl}`;
+    }
+
+    return `${API_BASE_URL}/${imageUrl}`;
+  };
+
+  useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
@@ -169,27 +149,42 @@ const NewChatScreen = () => {
       }),
     ]).start();
 
-    // Focus automatique sur la recherche
     setTimeout(() => {
       searchInputRef.current?.focus();
     }, 400);
   }, []);
 
-  useEffect(() => {
-    filterContacts();
-  }, [searchQuery, activeTab]);
-
-  const filterContacts = () => {
+  const filterContacts = async () => {
     setIsLoading(true);
-    
-    setTimeout(() => {
+
+    try {
       if (!searchQuery.trim()) {
-        // Grouper les contacts par catégorie
-        const grouped = contactsData.reduce((acc, contact) => {
-          const category = contact.category;
-          if (!acc[category]) {
-            acc[category] = [];
-          }
+        const contactsData = await fetchUserFriends(userId);
+
+        // Ajouter le statut pour chaque contact
+        const contactsWithStatus = await Promise.all(
+          contactsData.map(async (contact) => {
+            try {
+              const status = await getUserStatus(contact.id, token);
+              return {
+                ...contact,
+                isOnline: status.online_status,
+                lastSeen: calculateTimeSince(status.last_seen)
+              };
+            } catch (error) {
+              console.warn(`Erreur récupération statut pour ${contact.id}:`, error);
+              return {
+                ...contact,
+                isOnline: false,
+                lastSeen: "inconnu"
+              };
+            }
+          })
+        );
+
+        const grouped = contactsWithStatus.reduce((acc, contact) => {
+          const category = contact.category || 'Autres';
+          if (!acc[category]) acc[category] = [];
           acc[category].push(contact);
           return acc;
         }, {});
@@ -197,29 +192,33 @@ const NewChatScreen = () => {
         const sections = Object.keys(grouped).map(category => ({
           title: category,
           data: grouped[category].sort((a, b) => {
-            // Trier par statut en ligne puis par nom
-            if (a.isOnline !== b.isOnline) {
-              return b.isOnline - a.isOnline;
-            }
-            return a.name.localeCompare(b.name);
+            if (a.isOnline !== b.isOnline) return b.isOnline - a.isOnline;
+            const aName = `${a.first_name || ''} ${a.last_name || ''}`.trim();
+            const bName = `${b.first_name || ''} ${b.last_name || ''}`.trim();
+            return aName.localeCompare(bName);
           })
         }));
 
         setFilteredContacts(sections);
         setShowSuggestions(true);
       } else {
-        // Recherche dans tous les contacts
-        const filtered = contactsData.filter(contact =>
-          contact.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          contact.phone.includes(searchQuery) ||
-          contact.status.toLowerCase().includes(searchQuery.toLowerCase())
-        );
-
-        setFilteredContacts([{ title: 'Résultats', data: filtered }]);
+        const results = await searchUsers(searchQuery);
+        setFilteredContacts([{ 
+          title: 'Résultats', 
+          data: results.map(contact => ({
+            ...contact,
+            isOnline: false,
+            lastSeen: "inconnu"
+          }))
+        }]);
         setShowSuggestions(false);
       }
-      setIsLoading(false);
-    }, 200);
+    } catch (error) {
+      console.error('Erreur filtrage contacts :', error);
+      Alert.alert('Erreur', "Impossible de charger les contacts.");
+    }
+
+    setIsLoading(false);
   };
 
   const toggleContactSelection = (contactId) => {
@@ -234,14 +233,13 @@ const NewChatScreen = () => {
 
   const startChat = (contactId) => {
     if (selectedContacts.size > 1) {
-      // Créer un groupe
       Alert.alert(
         'Créer un groupe',
         `Créer un groupe avec ${selectedContacts.size} personnes ?`,
         [
           { text: 'Annuler', style: 'cancel' },
-          { 
-            text: 'Créer', 
+          {
+            text: 'Créer',
             onPress: () => {
               router.push(`/screens/messages/group-creation?contacts=${Array.from(selectedContacts).join(',')}`);
             }
@@ -249,11 +247,12 @@ const NewChatScreen = () => {
         ]
       );
     } else {
-      // Chat individuel
       const targetContactId = contactId || Array.from(selectedContacts)[0];
       router.push(`/screens/messages/chat?conversationId=${targetContactId}`);
     }
   };
+
+  const suggestedGroups = [];
 
   const startGroupChat = (group) => {
     router.push(`/screens/messages/chat?conversationId=group_${group.id}`);
@@ -262,16 +261,16 @@ const NewChatScreen = () => {
   const renderHeader = () => (
     <View style={styles.header}>
       <View style={styles.headerTop}>
-        <TouchableOpacity 
+        <TouchableOpacity
           onPress={() => router.back()}
           style={styles.backButton}
         >
           <Ionicons name="arrow-back" size={24} color="#1e293b" />
         </TouchableOpacity>
-        
+
         <Text style={styles.headerTitle}>Nouveau chat</Text>
-        
-        <TouchableOpacity 
+
+        <TouchableOpacity
           style={styles.moreButton}
           onPress={() => {
             Alert.alert(
@@ -301,7 +300,7 @@ const NewChatScreen = () => {
             placeholderTextColor="#94a3b8"
           />
           {searchQuery ? (
-            <TouchableOpacity 
+            <TouchableOpacity
               onPress={() => setSearchQuery('')}
               style={styles.clearButton}
             >
@@ -312,14 +311,14 @@ const NewChatScreen = () => {
       </View>
 
       <View style={styles.tabsContainer}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[styles.tab, activeTab === 'contacts' && styles.activeTab]}
           onPress={() => setActiveTab('contacts')}
         >
-          <Ionicons 
-            name="people" 
-            size={20} 
-            color={activeTab === 'contacts' ? '#667eea' : '#94a3b8'} 
+          <Ionicons
+            name="people"
+            size={20}
+            color={activeTab === 'contacts' ? '#667eea' : '#94a3b8'}
           />
           <Text style={[
             styles.tabText,
@@ -328,15 +327,15 @@ const NewChatScreen = () => {
             Contacts
           </Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
+
+        <TouchableOpacity
           style={[styles.tab, activeTab === 'groups' && styles.activeTab]}
           onPress={() => setActiveTab('groups')}
         >
-          <Ionicons 
-            name="people-circle" 
-            size={20} 
-            color={activeTab === 'groups' ? '#667eea' : '#94a3b8'} 
+          <Ionicons
+            name="people-circle"
+            size={20}
+            color={activeTab === 'groups' ? '#667eea' : '#94a3b8'}
           />
           <Text style={[
             styles.tabText,
@@ -345,15 +344,15 @@ const NewChatScreen = () => {
             Groupes
           </Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
+
+        <TouchableOpacity
           style={[styles.tab, activeTab === 'nearby' && styles.activeTab]}
           onPress={() => setActiveTab('nearby')}
         >
-          <Ionicons 
-            name="location" 
-            size={20} 
-            color={activeTab === 'nearby' ? '#667eea' : '#94a3b8'} 
+          <Ionicons
+            name="location"
+            size={20}
+            color={activeTab === 'nearby' ? '#667eea' : '#94a3b8'}
           />
           <Text style={[
             styles.tabText,
@@ -366,15 +365,14 @@ const NewChatScreen = () => {
     </View>
   );
 
-  const renderContactItem = ({ item }) => {
+  const renderContactItem = ({ item, index }) => {
     const isSelected = selectedContacts.has(item.id);
-    
+    const fullName = `${item.first_name || ''} ${item.last_name || ''}`.trim();
+    const imageUrl = getImageUrl(item.avatar_url);
+
     return (
       <TouchableOpacity
-        style={[
-          styles.contactItem,
-          isSelected && styles.selectedContactItem
-        ]}
+        style={[styles.contactItem, isSelected && styles.selectedContactItem]}
         onPress={() => {
           if (selectedContacts.size > 0) {
             toggleContactSelection(item.id);
@@ -387,7 +385,21 @@ const NewChatScreen = () => {
       >
         <View style={styles.contactContent}>
           <View style={styles.avatarContainer}>
-            <Image source={{ uri: item.avatar }} style={styles.contactAvatar} />
+            {imageUrl ? (
+              <Image
+                source={{ uri: imageUrl }}
+                style={styles.contactAvatar}
+                onError={(e) => {
+                  console.log('Erreur de chargement d\'image:', e.nativeEvent.error);
+                }}
+              />
+            ) : (
+              <View style={[styles.contactAvatar, styles.placeholderAvatar]}>
+                <Text style={styles.placeholderText}>
+                  {fullName.split(' ').map(name => name.charAt(0)).join('').toUpperCase()}
+                </Text>
+              </View>
+            )}
             {item.isOnline && <View style={styles.onlineIndicator} />}
             {isSelected && (
               <View style={styles.selectionOverlay}>
@@ -395,28 +407,26 @@ const NewChatScreen = () => {
               </View>
             )}
           </View>
-          
           <View style={styles.contactInfo}>
             <View style={styles.contactHeader}>
-              <Text style={styles.contactName}>{item.name}</Text>
+              <Text style={styles.contactName}>{fullName}</Text>
               {item.isOnline ? (
                 <Text style={styles.onlineStatus}>En ligne</Text>
               ) : (
-                <Text style={styles.lastSeen}>Il y a {item.lastSeen}</Text>
+                <Text style={styles.lastSeen}>{item.lastSeen}</Text>
               )}
             </View>
             <Text style={styles.contactStatus} numberOfLines={1}>
-              {item.status}
+              {item.status || 'Aucun statut'}
             </Text>
             <View style={styles.contactMeta}>
               <Ionicons name="people" size={12} color="#94a3b8" />
               <Text style={styles.mutualFriends}>
-                {item.mutualFriends} amis en commun
+                {item.mutualFriends || 0} amis en commun
               </Text>
             </View>
           </View>
-          
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.infoButton}
             onPress={() => router.push(`/screens/messages/profile?userId=${item.id}`)}
           >
@@ -427,39 +437,49 @@ const NewChatScreen = () => {
     );
   };
 
-  const renderGroupItem = ({ item }) => (
-    <TouchableOpacity
-      style={styles.groupItem}
-      onPress={() => startGroupChat(item)}
-      activeOpacity={0.7}
-    >
-      <View style={styles.groupAvatarContainer}>
-        <Image source={{ uri: item.avatar }} style={styles.groupAvatar} />
-        <View style={[
-          styles.groupTypeIndicator,
-          { backgroundColor: item.type === 'work' ? '#667eea' : '#10b981' }
-        ]}>
-          <Ionicons 
-            name={item.type === 'work' ? 'briefcase' : 'heart'} 
-            size={12} 
-            color="white" 
-          />
+  const renderGroupItem = ({ item, index }) => {
+    const imageUrl = getImageUrl(item.avatar);
+
+    return (
+      <TouchableOpacity
+        style={styles.groupItem}
+        onPress={() => startGroupChat(item)}
+        activeOpacity={0.7}
+      >
+        <View style={styles.groupAvatarContainer}>
+          {imageUrl ? (
+            <Image source={{ uri: imageUrl }} style={styles.groupAvatar} />
+          ) : (
+            <View style={[styles.groupAvatar, styles.placeholderAvatar]}>
+              <Text style={styles.placeholderText}>
+                {item.name.charAt(0).toUpperCase()}
+              </Text>
+            </View>
+          )}
+          <View style={[
+            styles.groupTypeIndicator,
+            { backgroundColor: item.type === 'work' ? '#667eea' : '#10b981' }
+          ]}>
+            <Ionicons
+              name={item.type === 'work' ? 'briefcase' : 'heart'}
+              size={12}
+              color="white"
+            />
+          </View>
         </View>
-      </View>
-      
-      <View style={styles.groupInfo}>
-        <Text style={styles.groupName}>{item.name}</Text>
-        <Text style={styles.groupMembers} numberOfLines={1}>
-          {item.members.join(', ')}
-        </Text>
-        <Text style={styles.groupMemberCount}>
-          {item.memberCount} membres
-        </Text>
-      </View>
-      
-      <Ionicons name="chevron-forward" size={20} color="#94a3b8" />
-    </TouchableOpacity>
-  );
+        <View style={styles.groupInfo}>
+          <Text style={styles.groupName}>{item.name}</Text>
+          <Text style={styles.groupMembers} numberOfLines={1}>
+            {item.members.join(', ')}
+          </Text>
+          <Text style={styles.groupMemberCount}>
+            {item.memberCount} membres
+          </Text>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color="#94a3b8" />
+      </TouchableOpacity>
+    );
+  };
 
   const renderSectionHeader = ({ section: { title } }) => (
     <View style={styles.sectionHeader}>
@@ -473,7 +493,7 @@ const NewChatScreen = () => {
     return (
       <View style={styles.suggestionsContainer}>
         <View style={styles.quickActions}>
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.quickAction}
             onPress={() => {
               Alert.alert('Nouveau groupe', 'Créer un nouveau groupe de discussion');
@@ -484,8 +504,8 @@ const NewChatScreen = () => {
             </View>
             <Text style={styles.quickActionText}>Nouveau groupe</Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={styles.quickAction}
             onPress={() => {
               Alert.alert('Contact', 'Ajouter un nouveau contact');
@@ -496,8 +516,8 @@ const NewChatScreen = () => {
             </View>
             <Text style={styles.quickActionText}>Ajouter contact</Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={styles.quickAction}
             onPress={() => {
               Alert.alert('Invitation', 'Inviter des amis à rejoindre l\'app');
@@ -510,11 +530,11 @@ const NewChatScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {activeTab === 'groups' && (
+        {activeTab === 'groups' && suggestedGroups.length > 0 && (
           <View style={styles.suggestedGroupsContainer}>
             <Text style={styles.suggestedTitle}>Groupes suggérés</Text>
-            {suggestedGroups.map((group) => (
-              <View key={group.id}>
+            {suggestedGroups.map((group, index) => (
+              <View key={`suggested-group-${group.id || index}-${Math.random()}`}>
                 {renderGroupItem({ item: group })}
               </View>
             ))}
@@ -528,7 +548,7 @@ const NewChatScreen = () => {
     if (selectedContacts.size === 0) return null;
 
     return (
-      <Animated.View 
+      <Animated.View
         style={[
           styles.floatingButton,
           {
@@ -546,13 +566,13 @@ const NewChatScreen = () => {
             style={styles.floatingButtonGradient}
           >
             <View style={styles.floatingButtonContent}>
-              <Ionicons 
-                name={selectedContacts.size > 1 ? "people" : "chatbubble"} 
-                size={20} 
-                color="white" 
+              <Ionicons
+                name={selectedContacts.size > 1 ? "people" : "chatbubble"}
+                size={20}
+                color="white"
               />
               <Text style={styles.floatingButtonText}>
-                {selectedContacts.size > 1 
+                {selectedContacts.size > 1
                   ? `Créer groupe (${selectedContacts.size})`
                   : 'Démarrer chat'
                 }
@@ -578,7 +598,7 @@ const NewChatScreen = () => {
       return (
         <SectionList
           sections={filteredContacts}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, index) => `contact-${item.id || index}-${Math.random()}`}
           renderItem={renderContactItem}
           renderSectionHeader={renderSectionHeader}
           contentContainerStyle={styles.listContainer}
@@ -593,7 +613,7 @@ const NewChatScreen = () => {
       return (
         <FlatList
           data={suggestedGroups}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, index) => `group-${item.id || index}-${Math.random()}`}
           renderItem={renderGroupItem}
           contentContainerStyle={styles.listContainer}
           showsVerticalScrollIndicator={false}
@@ -628,12 +648,12 @@ const NewChatScreen = () => {
   return (
     <SafeAreaView style={styles.container}>
       {renderHeader()}
-      
-      <KeyboardAvoidingView 
+
+      <KeyboardAvoidingView
         style={styles.content}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <Animated.View 
+        <Animated.View
           style={[
             styles.contentAnimated,
             {
@@ -645,7 +665,7 @@ const NewChatScreen = () => {
           {renderContent()}
         </Animated.View>
       </KeyboardAvoidingView>
-      
+
       {renderFloatingButton()}
     </SafeAreaView>
   );
@@ -658,26 +678,23 @@ const styles = StyleSheet.create({
   },
   header: {
     backgroundColor: 'white',
+    paddingBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#e2e8f0',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
   },
   headerTop: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 15,
-    paddingVertical: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 15,
   },
   backButton: {
-    marginRight: 15,
+    padding: 5,
   },
   headerTitle: {
-    flex: 1,
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: '600',
     color: '#1e293b',
   },
@@ -685,7 +702,7 @@ const styles = StyleSheet.create({
     padding: 5,
   },
   searchContainer: {
-    paddingHorizontal: 15,
+    paddingHorizontal: 20,
     paddingBottom: 15,
   },
   searchInputContainer: {
@@ -698,40 +715,38 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
+    marginLeft: 10,
     fontSize: 16,
     color: '#1e293b',
-    marginLeft: 10,
   },
   clearButton: {
-    marginLeft: 10,
+    padding: 5,
   },
   tabsContainer: {
     flexDirection: 'row',
-    paddingHorizontal: 15,
-    paddingBottom: 10,
+    paddingHorizontal: 20,
   },
   tab: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 15,
     borderRadius: 20,
-    marginHorizontal: 4,
+    marginHorizontal: 5,
   },
   activeTab: {
-    backgroundColor: '#eff6ff',
+    backgroundColor: '#f0f4ff',
   },
   tabText: {
     fontSize: 14,
     color: '#94a3b8',
-    marginLeft: 6,
+    marginLeft: 8,
     fontWeight: '500',
   },
   activeTabText: {
     color: '#667eea',
-    fontWeight: '600',
   },
   content: {
     flex: 1,
@@ -740,48 +755,22 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   listContainer: {
-    paddingBottom: 100,
+    paddingTop: 10,
   },
-  suggestionsContainer: {
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-  },
-  quickActions: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 20,
-  },
-  quickAction: {
+  loadingContainer: {
     flex: 1,
-    alignItems: 'center',
-    marginHorizontal: 8,
-  },
-  quickActionIcon: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 8,
+    paddingVertical: 50,
   },
-  quickActionText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#64748b',
-    textAlign: 'center',
-  },
-  suggestedGroupsContainer: {
-    marginTop: 10,
-  },
-  suggestedTitle: {
+  loadingText: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#1e293b',
-    marginBottom: 15,
+    color: '#64748b',
+    marginTop: 10,
   },
   sectionHeader: {
     backgroundColor: '#f8fafc',
-    paddingHorizontal: 15,
+    paddingHorizontal: 20,
     paddingVertical: 8,
   },
   sectionTitle: {
@@ -792,33 +781,44 @@ const styles = StyleSheet.create({
   },
   contactItem: {
     backgroundColor: 'white',
-    marginHorizontal: 15,
+    marginHorizontal: 20,
     marginVertical: 2,
-    borderRadius: 12,
-    elevation: 1,
+    borderRadius: 15,
+    padding: 15,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.05,
     shadowRadius: 2,
+    elevation: 1,
   },
   selectedContactItem: {
-    backgroundColor: '#eff6ff',
-    borderWidth: 2,
+    backgroundColor: '#f0f4ff',
     borderColor: '#667eea',
+    borderWidth: 2,
   },
   contactContent: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 15,
   },
   avatarContainer: {
     position: 'relative',
-    marginRight: 12,
+    marginRight: 15,
   },
   contactAvatar: {
     width: 50,
     height: 50,
     borderRadius: 25,
+    backgroundColor: '#e2e8f0',
+  },
+  placeholderAvatar: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#667eea',
+  },
+  placeholderText: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
   },
   onlineIndicator: {
     position: 'absolute',
@@ -827,7 +827,7 @@ const styles = StyleSheet.create({
     width: 14,
     height: 14,
     borderRadius: 7,
-    backgroundColor: '#22c55e',
+    backgroundColor: '#10b981',
     borderWidth: 2,
     borderColor: 'white',
   },
@@ -847,6 +847,7 @@ const styles = StyleSheet.create({
   },
   contactHeader: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 4,
   },
@@ -854,11 +855,10 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#1e293b',
-    flex: 1,
   },
   onlineStatus: {
     fontSize: 12,
-    color: '#22c55e',
+    color: '#10b981',
     fontWeight: '500',
   },
   lastSeen: {
@@ -883,27 +883,28 @@ const styles = StyleSheet.create({
     padding: 5,
   },
   groupItem: {
+    backgroundColor: 'white',
+    marginHorizontal: 20,
+    marginVertical: 2,
+    borderRadius: 15,
+    padding: 15,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'white',
-    marginHorizontal: 15,
-    marginVertical: 2,
-    padding: 15,
-    borderRadius: 12,
-    elevation: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.05,
     shadowRadius: 2,
+    elevation: 1,
   },
   groupAvatarContainer: {
     position: 'relative',
-    marginRight: 12,
+    marginRight: 15,
   },
   groupAvatar: {
     width: 50,
     height: 50,
     borderRadius: 25,
+    backgroundColor: '#e2e8f0',
   },
   groupTypeIndicator: {
     position: 'absolute',
@@ -935,6 +936,41 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#94a3b8',
   },
+  suggestionsContainer: {
+    paddingBottom: 20,
+  },
+  quickActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+  },
+  quickAction: {
+    alignItems: 'center',
+  },
+  quickActionIcon: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  quickActionText: {
+    fontSize: 12,
+    color: '#64748b',
+    fontWeight: '500',
+  },
+  suggestedGroupsContainer: {
+    paddingTop: 20,
+  },
+  suggestedTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1e293b',
+    paddingHorizontal: 20,
+    marginBottom: 10,
+  },
   nearbyContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -964,23 +1000,13 @@ const styles = StyleSheet.create({
   },
   enableLocationGradient: {
     paddingHorizontal: 30,
-    paddingVertical: 12,
+    paddingVertical: 15,
     borderRadius: 25,
   },
   enableLocationText: {
-    color: 'white',
     fontSize: 16,
     fontWeight: '600',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
-    fontSize: 16,
-    color: '#64748b',
-    marginTop: 10,
+    color: 'white',
   },
   floatingButton: {
     position: 'absolute',
@@ -989,11 +1015,6 @@ const styles = StyleSheet.create({
     right: 20,
     borderRadius: 25,
     overflow: 'hidden',
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
   },
   floatingButtonGradient: {
     borderRadius: 25,
@@ -1003,14 +1024,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 15,
-    paddingHorizontal: 20,
+    paddingHorizontal: 25,
   },
   floatingButtonText: {
-    color: 'white',
     fontSize: 16,
     fontWeight: '600',
-    marginLeft: 8,
+    color: 'white',
+    marginLeft: 10,
   },
 });
 
-export default NewChatScreen;
+export default NewChatScreen; 

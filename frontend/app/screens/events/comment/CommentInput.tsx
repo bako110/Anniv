@@ -14,10 +14,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import CommentService from '../../../../services/events/comment';
+import { API_BASE_URL } from '../../../../constants/config';
 
-const API_BASE_URL = 'http://192.168.11.120:8000'; // Remplace si nécessaire
-
-const CommentsOverlay = ({ eventId, onClose }) => {
+const CommentsOverlay = ({ eventId, onClose, onNewComment }) => {
   const [comments, setComments] = useState([]);
   const [loading, setLoading] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -63,7 +62,10 @@ const CommentsOverlay = ({ eventId, onClose }) => {
       });
       if (response.success) {
         setCommentText('');
-        loadComments();
+        await loadComments();
+        if (onNewComment) {
+          onNewComment(eventId);  // Informe le parent qu'un nouveau commentaire a été ajouté
+        }
       } else {
         Alert.alert('Erreur', "Impossible d'envoyer le commentaire");
       }
@@ -71,6 +73,8 @@ const CommentsOverlay = ({ eventId, onClose }) => {
       Alert.alert('Erreur', 'Erreur réseau ou serveur');
     }
   };
+
+  // ... le reste de ton code inchangé ...
 
   const deleteComment = async (commentId) => {
     try {
@@ -215,6 +219,7 @@ const CommentsOverlay = ({ eventId, onClose }) => {
     </Animated.View>
   );
 };
+
 
 const styles = {
   commentsOverlay: {

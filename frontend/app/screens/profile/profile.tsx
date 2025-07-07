@@ -19,9 +19,7 @@ import { Ionicons, MaterialIcons, Feather, AntDesign, FontAwesome5 } from '@expo
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getProfile } from '../../../services/profile';
 import Profilestyles from '../../../styles/profile';
-
-
-const API_BASE_URL = 'http://192.168.11.120:8000';
+import {API_BASE_URL} from '../../../constants/config'
 
 
 // Données par défaut en cas d'erreur

@@ -23,14 +23,13 @@ import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { profileService } from '../../../services/profile';
 
-
 const { width } = Dimensions.get('window');
 
 // Avatars par défaut
 const DEFAULT_AVATAR = 'https://ui-avatars.com/api/?name=User&background=667eea&color=fff&size=150';
 const DEFAULT_COVER = 'https://images.unsplash.com/photo-1506905925346-21bda4d32df4?w=400&h=200&fit=crop';
 
-const BASE_URL = 'http://192.168.11.120:8000'; // base URL pour concat si besoin
+const BASE_URL = 'http://192.168.11.123:8000'; 
 
 const EditProfileScreen = ({ route }) => {
   // États principaux
@@ -43,12 +42,18 @@ const EditProfileScreen = ({ route }) => {
     bio: '',
     location: '',
     website: '',
+    title: '',
+    company: '',
+    experience: '',
+    education: '',
   });
 
   const [avatar, setAvatar] = useState(DEFAULT_AVATAR);
   const [coverPhoto, setCoverPhoto] = useState(DEFAULT_COVER);
   const [interests, setInterests] = useState([]);
+  const [skills, setSkills] = useState([]);
   const [newInterest, setNewInterest] = useState('');
+  const [newSkill, setNewSkill] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   // États de chargement
@@ -167,10 +172,18 @@ const EditProfileScreen = ({ route }) => {
       bio: profileData.bio || '',
       location: profileData.location || '',
       website: profileData.website || '',
+      title: profileData.title || '',
+      company: profileData.company || '',
+      experience: profileData.experience || '',
+      education: profileData.education || '',
     });
 
     if (Array.isArray(profileData.interests)) {
       setInterests(profileData.interests);
+    }
+
+    if (Array.isArray(profileData.skills)) {
+      setSkills(profileData.skills);
     }
 
     if (profileData.avatar_url && !profileData.avatar_url.includes('ui-avatars.com')) {
@@ -184,10 +197,10 @@ const EditProfileScreen = ({ route }) => {
       setAvatar(`https://ui-avatars.com/api/?name=${encodeURIComponent(userName)}&background=667eea&color=fff&size=150`);
     }
 
-    if (profileData.cover_photo_url) {
-      const coverUrl = profileData.cover_photo_url.startsWith('http')
-        ? profileData.cover_photo_url
-        : `${BASE_URL}${profileData.cover_photo_url}`;
+    if (profileData.coverPhoto) {
+      const coverUrl = profileData.coverPhoto.startsWith('http')
+        ? profileData.coverPhoto
+        : `${BASE_URL}${profileData.coverPhoto}`;
       setCoverPhoto(`${coverUrl}?t=${Date.now()}`);
     } else {
       setCoverPhoto(DEFAULT_COVER);
@@ -323,12 +336,20 @@ const EditProfileScreen = ({ route }) => {
       if (uploadedData) {
         if (type === 'avatar') {
           const avatarUrl = uploadedData.avatar_url || uploadedData.url;
-          const fullAvatarUrl = avatarUrl.startsWith('http') ? avatarUrl : `${BASE_URL}${avatarUrl}`;
-          setAvatar(`${fullAvatarUrl}?t=${Date.now()}`); // cache busting
+          if (avatarUrl) {
+            const fullAvatarUrl = avatarUrl.startsWith('http') ? avatarUrl : `${BASE_URL}${avatarUrl}`;
+            setAvatar(`${fullAvatarUrl}?t=${Date.now()}`); // cache busting
+          } else {
+            console.warn('avatarUrl est vide ou non défini dans la réponse');
+          }
         } else {
-          const coverUrl = uploadedData.cover_photo_url || uploadedData.url;
-          const fullCoverUrl = coverUrl.startsWith('http') ? coverUrl : `${BASE_URL}${coverUrl}`;
-          setCoverPhoto(`${fullCoverUrl}?t=${Date.now()}`);
+          const coverUrl = uploadedData.coverPhoto || uploadedData.cover_photo_url || uploadedData.url;
+          if (coverUrl) {
+            const fullCoverUrl = coverUrl.startsWith('http') ? coverUrl : `${BASE_URL}${coverUrl}`;
+            setCoverPhoto(`${fullCoverUrl}?t=${Date.now()}`);
+          } else {
+            console.warn('coverUrl est vide ou non défini dans la réponse');
+          }
         }
 
         Alert.alert('Succès', 'Image mise à jour avec succès !');
@@ -347,7 +368,7 @@ const EditProfileScreen = ({ route }) => {
           const avatarUrl = cachedProfile.avatar_url || DEFAULT_AVATAR;
           setAvatar(avatarUrl.includes('http') ? avatarUrl : `${BASE_URL}${avatarUrl}`);
         } else {
-          const coverUrl = cachedProfile.cover_photo_url || DEFAULT_COVER;
+          const coverUrl = cachedProfile.coverPhoto || DEFAULT_COVER;
           setCoverPhoto(coverUrl.includes('http') ? coverUrl : `${BASE_URL}${coverUrl}`);
         }
       }
@@ -393,67 +414,79 @@ const EditProfileScreen = ({ route }) => {
   };
 
   const handleSave = async () => {
+    setIsSaving(true); // On bloque l'interface pendant la sauvegarde
     try {
-      setIsSaving(true);
-
+      // Validation du nom complet (champ obligatoire)
       if (!profile.name.trim()) {
-        Alert.alert('Erreur', 'Le nom est obligatoire.');
-        return;
+        throw new Error('Le nom est obligatoire.');
       }
 
+      // Récupération de l'identifiant utilisateur (email ou téléphone)
       const identifier = await getUserIdentifier();
 
-      if (identifier.includes('@')) {
-        if (!profile.email.trim()) {
-          Alert.alert('Erreur', "L'email est obligatoire.");
-          return;
-        }
-
-        if (profile.email.trim().toLowerCase() !== identifier.toLowerCase()) {
-          setProfile(prev => ({ ...prev, email: identifier }));
-        }
-      } else {
-        if (!profile.phone.trim()) {
-          setProfile(prev => ({ ...prev, phone: identifier }));
-        }
+      // Validation selon type d'identifiant
+      if (identifier.includes('@') && !profile.email.trim()) {
+        throw new Error("L'email est obligatoire.");
+      }
+      if (!identifier.includes('@') && !profile.phone.trim()) {
+        throw new Error('Le téléphone est obligatoire.');
       }
 
+      // Préparation des valeurs email et téléphone à envoyer (respect du backend)
+      const emailToUse = identifier.includes('@') ? identifier : profile.email.trim();
+      const phoneToUse = !identifier.includes('@') ? identifier : profile.phone.trim();
+
+      // Découpage du nom complet en prénom + nom
       const nameParts = profile.name.trim().split(' ');
+
+      // Construction de l'objet à envoyer au serveur
       const updateData = {
         first_name: nameParts[0] || '',
         last_name: nameParts.slice(1).join(' ') || '',
-        email: profile.email.trim() || (identifier.includes('@') ? identifier : ''),
-        phone: profile.phone.trim() || (!identifier.includes('@') ? identifier : ''),
+        email: emailToUse,
+        phone: phoneToUse,
         username: profile.username.trim(),
-        birth_date: profile.birthDate,
+        birthDate: profile.birthDate || null,
         bio: profile.bio.trim(),
         location: profile.location.trim(),
         website: profile.website.trim(),
+        title: profile.title.trim(),
+        company: profile.company.trim(),
+        experience: profile.experience.trim(),  // singulier, chaîne
+        education: profile.education.trim(),    // singulier, chaîne
+        skills: skills,
         interests: interests,
       };
 
+      // Suppression des champs vides sauf email et téléphone (qui sont obligatoires)
       Object.keys(updateData).forEach(key => {
-        if (!updateData[key] || updateData[key] === '') {
-          if (!['email', 'phone'].includes(key)) {
-            delete updateData[key];
-          }
+        if (!updateData[key] && !['email', 'phone'].includes(key)) {
+          delete updateData[key];
         }
       });
 
+      // Appel API pour mettre à jour le profil
       const updatedProfile = await profileService.updateProfile(identifier, updateData);
+
+      // Sauvegarde en cache local
       await saveToCache(updatedProfile);
+
+      // Mise à jour des infos utilisateur dans AsyncStorage
       await updateUserInfo(updatedProfile);
 
+      // Confirmation utilisateur et retour à l'écran précédent
       Alert.alert(
         'Succès',
         'Profil mis à jour avec succès !',
         [{ text: 'OK', onPress: () => router.back() }]
       );
+
     } catch (error) {
+      // Affichage de l’erreur si échec
       console.error('Erreur sauvegarde:', error);
       Alert.alert('Erreur', error.message || 'Échec de la mise à jour du profil');
     } finally {
-      setIsSaving(false);
+      setIsSaving(false); // Débloque l’interface
     }
   };
 
@@ -487,6 +520,18 @@ const EditProfileScreen = ({ route }) => {
     setInterests(interests.filter(interest => interest !== interestToRemove));
   };
 
+  const addSkill = () => {
+    const trimmedSkill = newSkill.trim();
+    if (trimmedSkill && !skills.includes(trimmedSkill)) {
+      setSkills([...skills, trimmedSkill]);
+      setNewSkill('');
+    }
+  };
+
+  const removeSkill = (skillToRemove) => {
+    setSkills(skills.filter(skill => skill !== skillToRemove));
+  };
+
   const handleDateChange = (event, selectedDate) => {
     setShowDatePicker(false);
     if (selectedDate) {
@@ -507,6 +552,7 @@ const EditProfileScreen = ({ route }) => {
       </SafeAreaView>
     );
   }
+
   return (
     <SafeAreaView style={EditeprofileStyles.container}>
       <ScrollView contentContainerStyle={EditeprofileStyles.scrollContainer}>
@@ -517,7 +563,7 @@ const EditProfileScreen = ({ route }) => {
             colors={['transparent', 'rgba(0,0,0,0.6)']}
             style={EditeprofileStyles.coverGradient}
           />
-          <TouchableOpacity 
+          <TouchableOpacity
             style={EditeprofileStyles.changeCoverButton}
             onPress={() => pickImage('cover')}
             disabled={isUploadingCover}
@@ -531,8 +577,8 @@ const EditProfileScreen = ({ route }) => {
               {isUploadingCover ? 'Upload...' : 'Changer'}
             </Text>
           </TouchableOpacity>
-          
-          <TouchableOpacity 
+
+          <TouchableOpacity
             style={EditeprofileStyles.backButton}
             onPress={() => router.back()}
           >
@@ -544,7 +590,7 @@ const EditProfileScreen = ({ route }) => {
         <View style={EditeprofileStyles.avatarSection}>
           <View style={EditeprofileStyles.avatarContainer}>
             <Image source={{ uri: avatar }} style={EditeprofileStyles.avatar} />
-            <TouchableOpacity 
+            <TouchableOpacity
               style={EditeprofileStyles.changeAvatarButton}
               onPress={() => pickImage('avatar')}
               disabled={isUploadingAvatar}
@@ -613,8 +659,8 @@ const EditProfileScreen = ({ route }) => {
           {/* Date de naissance */}
           <View style={EditeprofileStyles.inputContainer}>
             <Text style={EditeprofileStyles.inputLabel}>Date de naissance</Text>
-            <TouchableOpacity 
-              style={EditeprofileStyles.input} 
+            <TouchableOpacity
+              style={EditeprofileStyles.input}
               onPress={() => setShowDatePicker(true)}
             >
               <View style={EditeprofileStyles.dateInputContainer}>
@@ -624,7 +670,7 @@ const EditProfileScreen = ({ route }) => {
                 </Text>
               </View>
             </TouchableOpacity>
-            
+
             {showDatePicker && (
               <DateTimePicker
                 value={profile.birthDate ? new Date(profile.birthDate) : new Date()}
@@ -662,15 +708,15 @@ const EditProfileScreen = ({ route }) => {
                   onChangeText={(text) => setProfile({...profile, location: text})}
                   placeholder={isLoadingLocation ? "Récupération..." : "Où êtes-vous ?"}
                 />
-                <TouchableOpacity 
+                <TouchableOpacity
                   onPress={getCurrentLocation}
                   style={{ marginLeft: 10 }}
                   disabled={isLoadingLocation}
                 >
-                  <Ionicons 
-                    name={isLoadingLocation ? "hourglass-outline" : "refresh"} 
-                    size={20} 
-                    color="#667eea" 
+                  <Ionicons
+                    name={isLoadingLocation ? "hourglass-outline" : "refresh"}
+                    size={20}
+                    color="#667eea"
                   />
                 </TouchableOpacity>
               </View>
@@ -685,10 +731,92 @@ const EditProfileScreen = ({ route }) => {
               <TextInput
                 style={[EditeprofileStyles.input, EditeprofileStyles.iconInput]}
                 value={profile.website}
-                onChangeText={(text) => setProfile({...profile, website: text})}
+                onChangeText={(text) => setProfile({ ...profile, website: text })}
                 placeholder="Votre site web"
                 keyboardType="url"
               />
+            </View>
+          </View>
+
+          {/* Titre du profil */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Titre</Text>
+            <TextInput
+              style={EditeprofileStyles.input}
+              value={profile.title}
+              onChangeText={(text) => setProfile({ ...profile, title: text })}
+              placeholder="Ex: Développeur Mobile"
+            />
+          </View>
+
+          {/* Entreprise actuelle */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Entreprise actuelle</Text>
+            <TextInput
+              style={EditeprofileStyles.input}
+              value={profile.company}
+              onChangeText={(text) => setProfile({ ...profile, company: text })}
+              placeholder="Ex: Google, Freelance, etc."
+            />
+          </View>
+
+          {/* Expériences */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Expériences</Text>
+            <TextInput
+              style={[EditeprofileStyles.input, { height: 100, textAlignVertical: 'top' }]}
+              value={profile.experience}
+              onChangeText={(text) => setProfile({ ...profile, experience: text })}
+              placeholder="Résumé de vos expériences"
+              multiline
+            />
+          </View>
+
+          {/* Formations */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Formations</Text>
+            <TextInput
+              style={[EditeprofileStyles.input, { height: 80, textAlignVertical: 'top' }]}
+              value={profile.education}
+              onChangeText={(text) => setProfile({ ...profile, education: text })}
+              placeholder="Vos diplômes, écoles, etc."
+              multiline
+            />
+          </View>
+
+          {/* Compétences */}
+          <View style={EditeprofileStyles.inputContainer}>
+            <Text style={EditeprofileStyles.inputLabel}>Compétences</Text>
+            <View style={EditeprofileStyles.interestsContainer}>
+              {skills.map((skill, index) => (
+                <View key={index} style={EditeprofileStyles.interestTag}>
+                  <Text style={EditeprofileStyles.interestText}>{skill}</Text>
+                  <TouchableOpacity onPress={() => removeSkill(skill)}>
+                    <Ionicons name="close" size={16} color="#64748b" />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+            <View style={EditeprofileStyles.addInterestContainer}>
+              <TextInput
+                style={[EditeprofileStyles.input, EditeprofileStyles.interestInput]}
+                value={newSkill}
+                onChangeText={setNewSkill}
+                placeholder="Ajouter une compétence"
+                onSubmitEditing={addSkill}
+                returnKeyType="done"
+              />
+              <TouchableOpacity
+                style={EditeprofileStyles.addInterestButton}
+                onPress={addSkill}
+                disabled={!newSkill.trim()}
+              >
+                <Ionicons
+                  name="add"
+                  size={24}
+                  color={newSkill.trim() ? "#667eea" : "#cbd5e1"}
+                />
+              </TouchableOpacity>
             </View>
           </View>
 
@@ -714,15 +842,15 @@ const EditProfileScreen = ({ route }) => {
                 onSubmitEditing={addInterest}
                 returnKeyType="done"
               />
-              <TouchableOpacity 
-                style={EditeprofileStyles.addInterestButton} 
+              <TouchableOpacity
+                style={EditeprofileStyles.addInterestButton}
                 onPress={addInterest}
                 disabled={!newInterest.trim()}
               >
-                <Ionicons 
-                  name="add" 
-                  size={24} 
-                  color={newInterest.trim() ? "#667eea" : "#cbd5e1"} 
+                <Ionicons
+                  name="add"
+                  size={24}
+                  color={newInterest.trim() ? "#667eea" : "#cbd5e1"}
                 />
               </TouchableOpacity>
             </View>
@@ -732,14 +860,14 @@ const EditProfileScreen = ({ route }) => {
 
       {/* Boutons d'action */}
       <View style={EditeprofileStyles.actionButtons}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={EditeprofileStyles.cancelButton}
           onPress={() => router.back()}
           disabled={isSaving}
         >
           <Text style={EditeprofileStyles.cancelButtonText}>Annuler</Text>
         </TouchableOpacity>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[EditeprofileStyles.saveButton, isSaving && EditeprofileStyles.disabledButton]}
           onPress={handleSave}
           disabled={isSaving}

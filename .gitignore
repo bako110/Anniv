@@ -3,6 +3,9 @@ env/
 venv/
 .env/
 
+
+env/
+
 # Ignorer dossiers d’environnements virtuels dans backend et frontend
 backend/env/
 backend/venv/

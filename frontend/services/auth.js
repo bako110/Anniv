@@ -1,5 +1,5 @@
 // services/auth.js
-const API_BASE_URL = 'http://192.168.11.120:8000';
+import {API_BASE_URL} from '../constants/config'
 
 // Configuration par défaut pour les requêtes
 const defaultHeaders = {
@@ -91,7 +91,7 @@ export const signup = async (userData) => {
 export const login = async (identifier, password) => {
   try {
     const payload = {
-      identifier: identifier, // email ou téléphone
+      identifier: identifier, 
       password: password,
     };
 

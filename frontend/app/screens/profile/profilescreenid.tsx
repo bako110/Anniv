@@ -10,12 +10,20 @@ import {
   Dimensions,
   Animated,
   Linking,
+  Alert,
 } from 'react-native';
 import { router, useLocalSearchParams } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Ionicons, MaterialIcons, Feather, AntDesign, FontAwesome5 } from '@expo/vector-icons';
+import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
+import { getUserProfile, followUser, unfollowUser } from '../../../services/userService';
+import { API_BASE_URL } from '../../../constants/config';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
+
+const getFullImageUrl = (path) => {
+  if (!path) return null;
+  if (path.startsWith('http')) return path;
+  return `${API_BASE_URL}${path}`;
+};
 
 const ProfileScreen = () => {
   const { userId } = useLocalSearchParams();
@@ -23,8 +31,9 @@ const ProfileScreen = () => {
   const [userData, setUserData] = useState(null);
   const [isFollowing, setIsFollowing] = useState(false);
   const [activeTab, setActiveTab] = useState('about');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  // Données utilisateur simulées (remplacer par vos données réelles)
   useEffect(() => {
     Animated.timing(fadeAnim, {
       toValue: 1,
@@ -32,61 +41,88 @@ const ProfileScreen = () => {
       useNativeDriver: true,
     }).start();
 
-    // Simulation de chargement des données utilisateur
-    setTimeout(() => {
-      setUserData({
-        id: userId,
-        name: 'Alexandre Martin',
-        title: 'Développeur Full Stack | Expert React Native',
-        company: 'Tech Innovations Inc.',
-        avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&h=200&fit=crop&crop=face',
-        coverPhoto: 'https://images.unsplash.com/photo-1497366811353-6870744d04b2?w=800&h=300&fit=crop',
-        connections: 423,
-        followers: 1280,
-        views: 5400,
-        about: 'Développeur passionné avec 8 ans d\'expérience dans la création d\'applications mobiles et web. Spécialisé en React Native et Node.js. J\'aime résoudre des problèmes complexes et créer des expériences utilisateur exceptionnelles.',
-        experience: [
-          {
-            id: 1,
-            role: 'Développeur Full Stack Senior',
-            company: 'Tech Innovations Inc.',
-            duration: '2020 - Présent',
-            description: 'Responsable du développement des applications mobiles et de l\'architecture backend.'
-          },
-          {
-            id: 2,
-            role: 'Développeur Frontend',
-            company: 'Digital Solutions',
-            duration: '2017 - 2020',
-            description: 'Développement d\'interfaces utilisateur réactives pour applications web.'
-          }
-        ],
-        education: [
-          {
-            id: 1,
-            degree: 'Master en Informatique',
-            school: 'Université de Paris',
-            year: '2016'
-          }
-        ],
-        skills: ['React Native', 'JavaScript', 'TypeScript', 'Node.js', 'GraphQL', 'Redux', 'Firebase'],
-        contact: {
-          email: 'alex.martin@example.com',
-          phone: '+33 6 12 34 56 78',
-          website: 'alexmartin-dev.com'
-        }
-      });
-    }, 800);
-  }, []);
+    const fetchUser = async () => {
+      try {
+        setLoading(true);
+        const rawData = await getUserProfile(userId);
+        setUserData(rawData);
+        setIsFollowing(!!rawData.is_following);
+        setError(null);
+      } catch (err) {
+        setError(err.message || 'Erreur inconnue');
+      } finally {
+        setLoading(false);
+      }
+    };
 
-  const handleFollow = () => {
-    setIsFollowing(!isFollowing);
-    Animated.spring(fadeAnim, {
-      toValue: 1,
-      friction: 3,
-      useNativeDriver: true,
-    }).start();
+    fetchUser();
+  }, [userId]);
+
+  const handleFollow = async () => {
+    try {
+      const newFollowState = !isFollowing;
+      setIsFollowing(newFollowState);
+      setUserData((prev) => ({
+        ...prev,
+        followers: (prev.followers || 0) + (newFollowState ? 1 : -1),
+      }));
+
+      if (newFollowState) {
+        await followUser(userId);
+      } else {
+        await unfollowUser(userId);
+      }
+
+    } catch (error) {
+      setIsFollowing((prev) => !prev);
+      setUserData((prev) => ({
+        ...prev,
+        followers: (prev.followers || 0) + (isFollowing ? 1 : -1),
+      }));
+      Alert.alert('Erreur', 'Impossible de mettre à jour le suivi.');
+      console.error(error);
+    }
   };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <Text>Chargement du profil...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (error) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <Text>Erreur : {error}</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!userData) {
+    return (
+      <SafeAreaView style={styles.loadingContainer}>
+        <Text>Aucun profil trouvé.</Text>
+      </SafeAreaView>
+    );
+  }
+
+  const safeArray = (val) => (Array.isArray(val) ? val : []);
+
+  const educationArray =
+    typeof userData.education === 'string' && userData.education.trim() !== ''
+      ? [{ degree: userData.education, school: '', year: '' }]
+      : safeArray(userData.education);
+
+  const experienceArray =
+    typeof userData.experience === 'string' && userData.experience.trim() !== ''
+      ? [{ role: userData.experience, company: '', duration: '', description: userData.experience }]
+      : safeArray(userData.experience);
+
+  // Ici, on récupère ou génère un conversationId pour la redirection message
+  // A adapter en fonction de ta logique et données disponibles
+  const conversationId = userData.conversationId || 'default-conversation-id';
 
   const renderHeader = () => (
     <View style={styles.header}>
@@ -101,44 +137,37 @@ const ProfileScreen = () => {
 
   const renderProfileHeader = () => (
     <View style={styles.profileHeader}>
-      {/* Photo de couverture */}
-      <Image 
-        source={{ uri: userData?.coverPhoto || 'https://placehold.co/800x300' }} 
-        style={styles.coverPhoto} 
+      <Image
+        source={{ uri: getFullImageUrl(userData.coverPhoto) || 'https://placehold.co/800x300' }}
+        style={styles.coverPhoto}
       />
-      
-      {/* Photo de profil et infos */}
       <View style={styles.profileInfoContainer}>
-        <Image 
-          source={{ uri: userData?.avatar || 'https://placehold.co/200x200' }} 
-          style={styles.profileAvatar} 
+        <Image
+          source={{ uri: getFullImageUrl(userData.avatar_url) || 'https://placehold.co/200x200' }}
+          style={styles.profileAvatar}
         />
-        
         <View style={styles.profileTextContainer}>
-          <Text style={styles.profileName}>{userData?.name || 'Chargement...'}</Text>
-          <Text style={styles.profileTitle}>{userData?.title || ''}</Text>
-          <Text style={styles.profileCompany}>{userData?.company || ''}</Text>
-          
+          <Text style={styles.nameFooterText}>{userData.name || 'Nom inconnu'}</Text>
+          <Text style={styles.profileTitle}>{userData.title || 'Titre non défini'}</Text>
+          <Text style={styles.profileCompany}>{userData.company || 'Entreprise non définie'}</Text>
           <View style={styles.statsContainer}>
             <TouchableOpacity style={styles.statItem}>
-              <Text style={styles.statNumber}>{userData?.connections || '0'}</Text>
+              <Text style={styles.statNumber}>{userData.connections || 0}</Text>
               <Text style={styles.statLabel}>Contacts</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.statItem}>
-              <Text style={styles.statNumber}>{userData?.followers || '0'}</Text>
+              <Text style={styles.statNumber}>{userData.followers || 0}</Text>
               <Text style={styles.statLabel}>Abonnés</Text>
             </TouchableOpacity>
             <TouchableOpacity style={styles.statItem}>
-              <Text style={styles.statNumber}>{userData?.views || '0'}</Text>
+              <Text style={styles.statNumber}>{userData.views || 0}</Text>
               <Text style={styles.statLabel}>Vues</Text>
             </TouchableOpacity>
           </View>
         </View>
       </View>
-      
-      {/* Boutons d'action */}
       <View style={styles.actionButtonsContainer}>
-        <TouchableOpacity 
+        <TouchableOpacity
           style={[styles.actionButton, isFollowing && styles.followingButton]}
           onPress={handleFollow}
         >
@@ -146,8 +175,10 @@ const ProfileScreen = () => {
             {isFollowing ? 'Suivi' : 'Suivre'}
           </Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity style={styles.messageButton}>
+        <TouchableOpacity
+          style={styles.messageButton}
+          onPress={() => router.push(`/screens/messages/chat?conversationId=${conversationId}`)}
+        >
           <Text style={styles.messageButtonText}>Message</Text>
         </TouchableOpacity>
       </View>
@@ -156,35 +187,28 @@ const ProfileScreen = () => {
 
   const renderTabs = () => (
     <View style={styles.tabsContainer}>
-      <TouchableOpacity 
-        style={[styles.tab, activeTab === 'about' && styles.activeTab]}
-        onPress={() => setActiveTab('about')}
-      >
-        <Text style={[styles.tabText, activeTab === 'about' && styles.activeTabText]}>À propos</Text>
-      </TouchableOpacity>
-      <TouchableOpacity 
-        style={[styles.tab, activeTab === 'experience' && styles.activeTab]}
-        onPress={() => setActiveTab('experience')}
-      >
-        <Text style={[styles.tabText, activeTab === 'experience' && styles.activeTabText]}>Expérience</Text>
-      </TouchableOpacity>
-      <TouchableOpacity 
-        style={[styles.tab, activeTab === 'skills' && styles.activeTab]}
-        onPress={() => setActiveTab('skills')}
-      >
-        <Text style={[styles.tabText, activeTab === 'skills' && styles.activeTabText]}>Compétences</Text>
-      </TouchableOpacity>
+      {['about', 'experience', 'skills'].map((tab) => (
+        <TouchableOpacity
+          key={tab}
+          style={[styles.tab, activeTab === tab && styles.activeTab]}
+          onPress={() => setActiveTab(tab)}
+        >
+          <Text style={[styles.tabText, activeTab === tab && styles.activeTabText]}>
+            {tab === 'about' ? 'À propos' : tab === 'experience' ? 'Expérience' : 'Compétences'}
+          </Text>
+        </TouchableOpacity>
+      ))}
     </View>
   );
 
   const renderAboutTab = () => (
     <View style={styles.tabContent}>
       <Text style={styles.sectionTitle}>À propos</Text>
-      <Text style={styles.aboutText}>{userData?.about || ''}</Text>
-      
+      <Text style={styles.aboutText}>{userData.about || 'Aucune information disponible'}</Text>
+
       <Text style={styles.sectionTitle}>Formation</Text>
-      {userData?.education?.map(edu => (
-        <View key={edu.id} style={styles.educationItem}>
+      {educationArray.map((edu, idx) => (
+        <View key={idx} style={styles.educationItem}>
           <View style={styles.educationIcon}>
             <Ionicons name="school" size={20} color="#4f46e5" />
           </View>
@@ -195,39 +219,43 @@ const ProfileScreen = () => {
           </View>
         </View>
       ))}
-      
+
       <Text style={styles.sectionTitle}>Contact</Text>
-      <TouchableOpacity 
-        style={styles.contactItem}
-        onPress={() => Linking.openURL(`mailto:${userData?.contact?.email}`)}
-      >
-        <Ionicons name="mail" size={20} color="#4f46e5" />
-        <Text style={styles.contactText}>{userData?.contact?.email}</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity 
-        style={styles.contactItem}
-        onPress={() => Linking.openURL(`tel:${userData?.contact?.phone}`)}
-      >
-        <Ionicons name="call" size={20} color="#4f46e5" />
-        <Text style={styles.contactText}>{userData?.contact?.phone}</Text>
-      </TouchableOpacity>
-      
-      <TouchableOpacity 
-        style={styles.contactItem}
-        onPress={() => Linking.openURL(`https://${userData?.contact?.website}`)}
-      >
-        <Ionicons name="globe" size={20} color="#4f46e5" />
-        <Text style={styles.contactText}>{userData?.contact?.website}</Text>
-      </TouchableOpacity>
+      {userData.contact?.email && (
+        <TouchableOpacity
+          style={styles.contactItem}
+          onPress={() => Linking.openURL(`mailto:${userData.contact.email}`)}
+        >
+          <Ionicons name="mail" size={20} color="#4f46e5" />
+          <Text style={styles.contactText}>{userData.contact.email}</Text>
+        </TouchableOpacity>
+      )}
+      {userData.contact?.phone && (
+        <TouchableOpacity
+          style={styles.contactItem}
+          onPress={() => Linking.openURL(`tel:${userData.contact.phone}`)}
+        >
+          <Ionicons name="call" size={20} color="#4f46e5" />
+          <Text style={styles.contactText}>{userData.contact.phone}</Text>
+        </TouchableOpacity>
+      )}
+      {userData.contact?.website && (
+        <TouchableOpacity
+          style={styles.contactItem}
+          onPress={() => Linking.openURL(`https://${userData.contact.website}`)}
+        >
+          <Ionicons name="globe" size={20} color="#4f46e5" />
+          <Text style={styles.contactText}>{userData.contact.website}</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 
   const renderExperienceTab = () => (
     <View style={styles.tabContent}>
       <Text style={styles.sectionTitle}>Expérience professionnelle</Text>
-      {userData?.experience?.map(exp => (
-        <View key={exp.id} style={styles.experienceItem}>
+      {experienceArray.map((exp, idx) => (
+        <View key={idx} style={styles.experienceItem}>
           <View style={styles.experienceIcon}>
             <FontAwesome5 name="briefcase" size={16} color="#4f46e5" />
           </View>
@@ -246,7 +274,7 @@ const ProfileScreen = () => {
     <View style={styles.tabContent}>
       <Text style={styles.sectionTitle}>Compétences</Text>
       <View style={styles.skillsContainer}>
-        {userData?.skills?.map((skill, index) => (
+        {safeArray(userData.skills).map((skill, index) => (
           <View key={index} style={styles.skillPill}>
             <Text style={styles.skillText}>{skill}</Text>
           </View>
@@ -266,20 +294,11 @@ const ProfileScreen = () => {
     }
   };
 
-  if (!userData) {
-    return (
-      <SafeAreaView style={styles.loadingContainer}>
-        <Text>Chargement du profil...</Text>
-      </SafeAreaView>
-    );
-  }
-
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView>
         {renderHeader()}
         {renderProfileHeader()}
-        
         <Animated.View style={{ opacity: fadeAnim }}>
           {renderTabs()}
           {renderTabContent()}
@@ -326,9 +345,25 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 200,
   },
+  profileName: {
+    fontSize: 20,
+    fontWeight: 'bold',
+    color: '#000',
+    top: -100,
+  },
+  profileTitle: {
+    fontSize: 16,
+    color: '#333',
+    marginTop: 4,
+  },
+  profileCompany: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 2,
+  },
   profileInfoContainer: {
     paddingHorizontal: 20,
-    marginTop: -50,
+    marginTop: 0,
     flexDirection: 'row',
   },
   profileAvatar: {
@@ -342,21 +377,6 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 20,
     marginTop: 20,
-  },
-  profileName: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#1e293b',
-  },
-  profileTitle: {
-    fontSize: 16,
-    color: '#4f46e5',
-    marginTop: 2,
-  },
-  profileCompany: {
-    fontSize: 14,
-    color: '#64748b',
-    marginTop: 2,
   },
   statsContainer: {
     flexDirection: 'row',
@@ -555,6 +575,17 @@ const styles = StyleSheet.create({
   skillText: {
     color: '#4f46e5',
     fontWeight: '500',
+  },
+  nameFooterContainer: {
+    padding: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#ccc',
+    alignItems: 'center',
+  },
+  nameFooterText: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#334155',
   },
 });
 

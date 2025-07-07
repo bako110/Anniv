@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -9,18 +8,17 @@ import {
   ScrollView,
   Switch,
   Alert,
-  Share,
   Linking,
 } from 'react-native';
 import { router } from 'expo-router';
-import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons, MaterialIcons, Feather } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { LinearGradient } from 'expo-linear-gradient';
 import { logout } from '../../../services/auth';
 import { getProfile } from '../../../services/profile';
+import { STORAGE_KEYS } from '@/constants/storageKeys';
 
 const SettingsScreen = () => {
-  // États pour les switches
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [birthdayReminders, setBirthdayReminders] = useState(true);
   const [eventReminders, setEventReminders] = useState(true);
@@ -28,154 +26,96 @@ const SettingsScreen = () => {
   const [darkModeEnabled, setDarkModeEnabled] = useState(false);
   const [locationEnabled, setLocationEnabled] = useState(true);
   const [autoBackup, setAutoBackup] = useState(true);
+
   const [user, setUser] = useState({
     name: 'Chargement...',
     email: '',
     phone: '',
     plan: 'Gratuit',
-    version: '2.1.0'
+    version: '2.1.0',
   });
 
-  // Fonction pour récupérer l'identifiant utilisateur depuis AsyncStorage
   const getUserIdentifier = async () => {
     try {
-      // Sources possibles d'identifiants dans AsyncStorage
       const sources = [
-        'userEmail',        // Ancienne version (rétrocompatibilité)
-        'userPhone',        // Si vous stockez le téléphone séparément
-        'userIdentifier',   // Nouvelle version unifiée
-        'userInfo',         // Objet contenant les infos utilisateur
-        'loginCredentials'  // Objet de connexion
+        'userEmail',
+        'userPhone',
+        'userIdentifier',
+        'userInfo',
+        'loginCredentials',
       ];
 
       for (const source of sources) {
         const data = await AsyncStorage.getItem(source);
         if (data) {
           let identifier = null;
-
-          // Traitement selon le type de source
           if (source === 'userEmail' || source === 'userPhone' || source === 'userIdentifier') {
-            // Valeur simple (string)
             identifier = data;
           } else {
-            // Objet JSON à parser
             try {
-              const parsedData = JSON.parse(data);
-              identifier = parsedData.email || parsedData.phone || parsedData.identifier;
-            } catch (parseError) {
-              console.warn(`Erreur parsing ${source}:`, parseError);
+              const parsed = JSON.parse(data);
+              identifier = parsed.email || parsed.phone || parsed.identifier;
+            } catch (err) {
+              console.warn(`Erreur parsing ${source}:`, err);
               continue;
             }
           }
 
-          // Valider et formater l'identifiant trouvé
           if (identifier) {
-            const formattedIdentifier = formatIdentifier(identifier);
-            if (formattedIdentifier) {
-              console.log(`Identifiant valide trouvé dans ${source}:`, formattedIdentifier);
-              return formattedIdentifier;
-            }
+            const formatted = formatIdentifier(identifier);
+            if (formatted) return formatted;
           }
         }
       }
 
-      throw new Error("Aucun identifiant valide trouvé (email ou téléphone)");
-
+      throw new Error('Aucun identifiant valide trouvé');
     } catch (error) {
-      console.error("Erreur getUserIdentifier:", error);
+      console.error('Erreur getUserIdentifier:', error);
       return null;
     }
   };
 
-  // Fonction pour formater et valider un identifiant
   const formatIdentifier = (identifier) => {
-    if (!identifier) return null;
-    
-    // Nettoyer l'identifiant
-    const cleanIdentifier = identifier.toString().trim();
-    
-    // Vérifier si c'est un email
+    const clean = identifier.toString().trim();
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (emailRegex.test(cleanIdentifier)) {
-      return {
-        type: 'email',
-        value: cleanIdentifier.toLowerCase()
-      };
-    }
-    
-    // Vérifier si c'est un numéro de téléphone
     const phoneRegex = /^[\+]?[0-9\s\-\(\)]+$/;
-    const cleanPhone = cleanIdentifier.replace(/[\s\-\(\)]/g, '');
-    if (phoneRegex.test(cleanIdentifier) && cleanPhone.length >= 8) {
-      return {
-        type: 'phone',
-        value: cleanPhone
-      };
-    }
-    
+    const cleanPhone = clean.replace(/[\s\-\(\)]/g, '');
+
+    if (emailRegex.test(clean)) return { type: 'email', value: clean.toLowerCase() };
+    if (phoneRegex.test(clean) && cleanPhone.length >= 8) return { type: 'phone', value: cleanPhone };
     return null;
   };
 
-  // Fonction pour obtenir un nom par défaut basé sur l'identifiant
-  const getDefaultName = (identifierObj) => {
-    if (identifierObj?.type === 'email') {
-      return identifierObj.value.split('@')[0];
-    } else if (identifierObj?.type === 'phone') {
-      return `Utilisateur ${identifierObj.value.slice(-4)}`;
-    }
+  const getDefaultName = (idObj) => {
+    if (idObj?.type === 'email') return idObj.value.split('@')[0];
+    if (idObj?.type === 'phone') return `Utilisateur ${idObj.value.slice(-4)}`;
     return 'Utilisateur';
   };
 
-  // Fonction pour charger le profil utilisateur (emails ET téléphones)
   const loadUserProfile = async () => {
     try {
-      // 1. Récupérer l'identifiant utilisateur depuis AsyncStorage
-      const identifierObj = await getUserIdentifier();
-      
-      if (identifierObj) {
-        console.log('Identifiant trouvé:', identifierObj);
-        
-        // 2. Appeler l'API avec l'identifiant
-        const profile = await getProfile(identifierObj.value);
-        
-        if (profile) {
-          // 3. Mettre à jour l'état utilisateur
-          setUser({
-            name: profile.first_name || getDefaultName(identifierObj),
-            email: profile.email || (identifierObj.type === 'email' ? identifierObj.value : ''),
-            phone: profile.phone || (identifierObj.type === 'phone' ? identifierObj.value : ''),
-            plan: profile.premium ? 'Premium' : 'Gratuit',
-            version: '2.1.0'
-          });
-        }
-      } else {
-        console.warn('Aucun identifiant utilisateur trouvé');
-        // Profil par défaut si aucun identifiant
+      const identifier = await getUserIdentifier();
+      if (identifier) {
+        const profile = await getProfile(identifier.value);
         setUser({
-          name: 'Utilisateur',
-          email: '',
-          phone: '',
-          plan: 'Gratuit',
-          version: '2.1.0'
+          name: profile.first_name || getDefaultName(identifier),
+          email: profile.email || (identifier.type === 'email' ? identifier.value : ''),
+          phone: profile.phone || (identifier.type === 'phone' ? identifier.value : ''),
+          plan: profile.premium ? 'Premium' : 'Gratuit',
+          version: '2.1.0',
         });
+      } else {
+        setUser({ name: 'Utilisateur', email: '', phone: '', plan: 'Gratuit', version: '2.1.0' });
       }
     } catch (error) {
-      console.error('Erreur lors du chargement du profil:', error);
-      // Gérer l'erreur avec un profil par défaut
-      setUser({
-        name: 'Utilisateur',
-        email: '',
-        phone: '',
-        plan: 'Gratuit',
-        version: '2.1.0'
-      });
+      console.error('Erreur chargement profil:', error);
+      setUser({ name: 'Utilisateur', email: '', phone: '', plan: 'Gratuit', version: '2.1.0' });
     }
   };
 
   useEffect(() => {
     loadUserProfile();
   }, []);
-
 
   const handleBack = () => {
     router.back();
@@ -192,39 +132,32 @@ const SettingsScreen = () => {
           style: 'destructive',
           onPress: async () => {
             try {
-              // Récupérer le token stocké
-              const token = await AsyncStorage.getItem('userToken');
-              
+              const token = await AsyncStorage.getItem(STORAGE_KEYS.AUTH_TOKEN);
+
               if (token) {
                 try {
-                  // Appeler l'API de déconnexion
                   await logout(token);
                 } catch (apiError) {
-                  console.warn('Erreur API:', apiError.message);
-                  // Continue même si l'API échoue
+                  console.warn('Erreur API logout:', apiError.message);
                 }
               }
 
-              // Vider complètement AsyncStorage
+              // VIDER COMPLÈTEMENT AsyncStorage - supprime toutes les données
               await AsyncStorage.clear();
 
-              // Rediriger vers l'écran de connexion
-              router.replace('/screens/auth/login');
+              console.log('AsyncStorage vidé complètement lors de la déconnexion');
 
+              // Redirection après déconnexion
+              router.replace('/screens/auth/login');
             } catch (error) {
               console.error('Erreur lors de la déconnexion:', error);
-              Alert.alert(
-                'Erreur', 
-                'Impossible de se déconnecter. Veuillez réessayer.'
-              );
+              Alert.alert('Erreur', 'Impossible de se déconnecter. Veuillez réessayer.');
             }
-          }
-        }
+          },
+        },
       ]
     );
   };
-
-
 
   const handleDeleteAccount = () => {
     Alert.alert(

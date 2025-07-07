@@ -20,9 +20,11 @@ import { Ionicons, MaterialIcons, Feather, AntDesign, FontAwesome5 } from '@expo
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getProfile } from '../../../services/profile';
 import Homestyles from '../../../styles/home';
+import { API_BASE_URL } from '../../../constants/config';
+
 
 const { width, height } = Dimensions.get('window');
-const API_BASE_URL = 'http://192.168.11.120:8000';
+
 
 // Données d'exemple pour les prochains anniversaires
 const upcomingBirthdays = [
@@ -405,9 +407,7 @@ const HomeScreen = () => {
 
   useEffect(() => {
     const loadProfile = async () => {
-      if (setIsLoading) {
-        setIsLoading(true);
-      }
+      setIsLoading(true);
       try {
         const identifierObj = await getUserIdentifier();
         console.log('Identifiant utilisateur récupéré:', identifierObj);
@@ -441,9 +441,7 @@ const HomeScreen = () => {
         console.warn('Utilisation profil par défaut suite erreur');
         updateUserProfileData(defaultUserProfile);
       } finally {
-        if (setIsLoading) {
-          setIsLoading(false);
-        }
+        setIsLoading(false);
       }
     };
 
@@ -512,10 +510,18 @@ const HomeScreen = () => {
 
   const handleAvatarError = () => {
     setAvatarError(true);
+    setUser(prevUser => ({
+      ...prevUser,
+      avatar: `${generateFallbackAvatar(prevUser.name)}?${Math.random()}`
+    }));
   };
 
   const handleProfileImageError = () => {
     setProfileImageError(true);
+    setUser(prevUser => ({
+      ...prevUser,
+      profileImage: prevUser.profileImage ? `${prevUser.profileImage}?${Math.random()}` : null
+    }));
   };
 
   const onRefresh = React.useCallback(() => {

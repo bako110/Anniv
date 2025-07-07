@@ -1,13 +1,29 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { View, Text, FlatList, SafeAreaView, RefreshControl, Alert, TouchableOpacity, Image, ScrollView, Animated, Share, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  FlatList,
+  SafeAreaView,
+  RefreshControl,
+  Alert,
+  TouchableOpacity,
+  Image,
+  ScrollView,
+  Animated,
+  Share,
+  KeyboardAvoidingView,
+  Platform,
+  Dimensions,
+  Modal,
+} from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import EventService from '../../../services/events/event';
 import CommentsOverlay from './comment/CommentInput';
-import { Dimensions } from 'react-native';
+import { socket, onUserStatusChange } from '../../../services/websocketService';
+import { API_BASE_URL } from '../../../constants/config';
 
 const { width, height: SCREEN_HEIGHT } = Dimensions.get('window');
-const API_BASE_URL = 'http://192.168.11.120:8000';
 
 const categories = [
   { id: 'all', name: 'Tout', icon: 'apps', color: '#667eea' },
@@ -26,6 +42,10 @@ const EventListScreen = () => {
   const [totalPages, setTotalPages] = useState(1);
   const [fadeAnim] = useState(new Animated.Value(0));
   const [commentingEventId, setCommentingEventId] = useState(null);
+  const [onlineUsers, setOnlineUsers] = useState(new Set());
+  const [expandedDescriptions, setExpandedDescriptions] = useState({});
+  // Nouvel état pour la modale image
+  const [modalImageUri, setModalImageUri] = useState(null);
 
   useEffect(() => {
     Animated.timing(fadeAnim, {
@@ -33,39 +53,72 @@ const EventListScreen = () => {
       duration: 500,
       useNativeDriver: true,
     }).start();
+
     fetchEvents(page);
+
+    const handleUserStatusChange = (data) => {
+      if (data.status === 'online') {
+        setOnlineUsers(prev => new Set(prev).add(data.userId));
+      } else {
+        setOnlineUsers(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(data.userId);
+          return newSet;
+        });
+      }
+    };
+
+    onUserStatusChange(handleUserStatusChange);
+
+    return () => {
+      if (socket) {
+        socket.off('userStatus', handleUserStatusChange);
+      }
+    };
   }, [page]);
 
   const fetchEvents = async (pageNumber = 1) => {
     setRefreshing(true);
-    const response = await EventService.getEvents(pageNumber, 20);
-    if (response.success) {
-      const enhancedEvents = response.data.events.map(event => ({
-        ...event,
-        organizer_full_name:
-          event.organizer?.first_name && event.organizer?.last_name
-            ? `${event.organizer.first_name} ${event.organizer.last_name}`
-            : event.organizer_name || 'Organisateur',
-      }));
-      setEvents(enhancedEvents);
-      setTotalPages(response.data.pages);
-    } else {
-      Alert.alert('Erreur', 'Impossible de charger les événements');
+    try {
+      const response = await EventService.getEvents(pageNumber, 20);
+      console.log("Event data:", response.data.events);
+      if (response.success) {
+        const enhancedEvents = response.data.events.map(event => ({
+          ...event,
+          organizer_full_name:
+            event.organizer?.first_name && event.organizer?.last_name
+              ? `${event.organizer.first_name} ${event.organizer.last_name}`
+              : event.organizer_name || 'Organisateur',
+        }));
+        setEvents(enhancedEvents);
+        setTotalPages(response.data.pages);
+      } else {
+        Alert.alert('Erreur', 'Impossible de charger les événements');
+      }
+    } catch (error) {
+      Alert.alert('Erreur', 'Une erreur est survenue lors du chargement des événements');
     }
     setRefreshing(false);
   };
 
-  const onRefresh = useCallback(() => {
+  const onRefresh = () => {
     setPage(1);
     fetchEvents(1);
-  }, []);
+  };
+
+  const toggleDescriptionExpansion = (eventId) => {
+    setExpandedDescriptions(prev => ({
+      ...prev,
+      [eventId]: !prev[eventId]
+    }));
+  };
 
   const filteredEvents =
     selectedCategory === 'all'
       ? events
       : events.filter(event => event.category === selectedCategory);
 
-  const handleLike = eventId => {
+  const handleLike = (eventId) => {
     setEvents(prevEvents =>
       prevEvents.map(event =>
         event.id === eventId ? { ...event, likes: (event.likes || 0) + 1 } : event
@@ -73,7 +126,7 @@ const EventListScreen = () => {
     );
   };
 
-  const handleInterested = eventId => {
+  const handleInterested = (eventId) => {
     setEvents(prevEvents =>
       prevEvents.map(event =>
         event.id === eventId ? { ...event, isInterested: !event.isInterested } : event
@@ -81,7 +134,8 @@ const EventListScreen = () => {
     );
   };
 
-  const handleGoing = eventId => {
+
+  const handleGoing = (eventId) => {
     setEvents(prevEvents =>
       prevEvents.map(event =>
         event.id === eventId
@@ -97,7 +151,7 @@ const EventListScreen = () => {
     );
   };
 
-  const handleShare = async event => {
+  const handleShare = async (event) => {
     try {
       await Share.share({
         message: `Découvrez cet événement: ${event.title} le ${event.date} à ${event.time}`,
@@ -108,8 +162,16 @@ const EventListScreen = () => {
     }
   };
 
-  const openCommentInput = eventId => {
+  const openCommentInput = (eventId) => {
     setCommentingEventId(eventId);
+  };
+
+  // Fonctions pour gérer la modale image
+  const openImageModal = (imageUri) => {
+    setModalImageUri(imageUri);
+  };
+  const closeImageModal = () => {
+    setModalImageUri(null);
   };
 
   const formatImageUrl = (url) => {
@@ -134,7 +196,11 @@ const EventListScreen = () => {
 
   const renderCategoryFilter = () => (
     <View style={styles.categoryContainer}>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoryScroll}>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.categoryScroll}
+      >
         {categories.map(category => (
           <TouchableOpacity
             key={category.id}
@@ -166,19 +232,31 @@ const EventListScreen = () => {
     <Animated.View style={[styles.eventCard, { opacity: fadeAnim }]}>
       <View style={styles.eventHeader}>
         <View style={styles.organizerInfo}>
-          <Image
-            source={{
-              uri: formatImageUrl(item.organizer?.avatar_url) || 'https://images.unsplash.com/photo-1494790108755-2616b612b786?w=50&h=50&fit=crop&crop=face',
-            }}
-            style={styles.organizerAvatar}
-            onError={() => console.log('Failed to load organizer avatar')}
-          />
+          <TouchableOpacity
+            onPress={() =>
+              router.push(`/screens/profile/profilescreenid?userId=${item.organizer?.id}`)
+            }
+          >
+            <Image
+              source={{
+                uri:
+                  formatImageUrl(item.organizer?.avatar_url) ||
+                  'https://images.unsplash.com/photo-1494790108755-2616b612b786?w=50&h=50&fit=crop&crop=face',
+              }}
+              style={styles.organizerAvatar}
+              onError={() => console.log('Failed to load organizer avatar')}
+            />
+          </TouchableOpacity>
+
           <View style={styles.organizerDetails}>
             <View style={styles.organizerNameContainer}>
               <Text style={styles.organizerName}>
                 {item.organizer_full_name || item.organizer_name || item.organizer?.full_name}
               </Text>
               {item.organizer?.verified && <Ionicons name="checkmark-circle" size={16} color="#3b82f6" />}
+              <View
+                style={onlineUsers.has(item.organizer?.id) ? styles.onlineIndicator : styles.offlineIndicator}
+              />
             </View>
             <Text style={styles.postedTime}>{new Date(item.date).toLocaleString()}</Text>
           </View>
@@ -189,13 +267,29 @@ const EventListScreen = () => {
       </View>
       <TouchableOpacity
         style={styles.eventContent}
-        onPress={() => router.push(`/screens/events/EventDetailsScreen?eventId=${item.id}`)}
+        onPress={() => router.push(`/screens/events/eventdetail?eventId=${item.id}`)}
       >
         <Text style={styles.eventTitle}>{item.title}</Text>
-        <Text style={styles.eventDescription} numberOfLines={3}>
+        <Text style={styles.eventDescription} numberOfLines={expandedDescriptions[item.id] ? 0 : 2}>
           {item.description}
         </Text>
-        {item.image && <Image source={{ uri: formatImageUrl(item.image) }} style={styles.eventImage} resizeMode="cover" onError={() => console.log('Failed to load event image')}/>}
+        {item.description.length > 100 && (
+          <TouchableOpacity onPress={() => toggleDescriptionExpansion(item.id)}>
+            <Text style={styles.seeMoreText}>
+              {expandedDescriptions[item.id] ? 'Voir moins' : 'Voir plus'}
+            </Text>
+          </TouchableOpacity>
+        )}
+        {item.image && (
+          <TouchableOpacity onPress={() => openImageModal(formatImageUrl(item.image))}>
+            <Image
+              source={{ uri: formatImageUrl(item.image) }}
+              style={styles.eventImage}
+              resizeMode="cover"
+              onError={() => console.log('Failed to load event image')}
+            />
+          </TouchableOpacity>
+        )}
         <View style={styles.eventInfoContainer}>
           <View style={styles.eventInfoRow}>
             <View style={styles.eventInfoItem}>
@@ -259,7 +353,9 @@ const EventListScreen = () => {
               size={16}
               color={item.isInterested ? '#f59e0b' : '#64748b'}
             />
-            <Text style={[styles.eventActionText, item.isInterested && styles.eventActionTextActive]}>Intéressé</Text>
+            <Text style={[styles.eventActionText, item.isInterested && styles.eventActionTextActive]}>
+              Intéressé
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.eventActionButton, item.isGoing && styles.eventActionButtonGoing]}
@@ -303,10 +399,35 @@ const EventListScreen = () => {
             onClose={() => setCommentingEventId(null)}
           />
         )}
+
+        {/* MODALE IMAGE PLEIN ECRAN */}
+        <Modal
+          visible={modalImageUri !== null}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={closeImageModal}
+        >
+          <TouchableOpacity
+            style={{
+              flex: 1,
+              backgroundColor: 'rgba(0,0,0,0.9)',
+              justifyContent: 'center',
+              alignItems: 'center',
+            }}
+            activeOpacity={1}
+            onPress={closeImageModal}
+          >
+            <Image
+              source={{ uri: modalImageUri }}
+              style={{ width: '90%', height: '70%', borderRadius: 12 }}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
+        </Modal>
       </SafeAreaView>
     </KeyboardAvoidingView>
   );
-};
+} 
 
 const styles = {
   container: {
@@ -442,6 +563,12 @@ const styles = {
     color: '#475569',
     lineHeight: 20,
     marginBottom: 12,
+    fontFamily: 'Roboto', // Utilisez une police plus jolie si disponible
+  },
+  seeMoreText: {
+    color: '#667eea',
+    fontWeight: 'bold',
+    marginBottom: 12,
   },
   eventImage: {
     width: '100%',
@@ -566,6 +693,20 @@ const styles = {
   eventActionTextGoing: {
     color: 'white',
     fontWeight: '600',
+  },
+  onlineIndicator: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: 'green',
+    marginLeft: 8,
+  },
+  offlineIndicator: {
+    width: 6,
+    height: 6,
+    borderRadius: 5,
+    backgroundColor: 'green',
+    marginLeft: 5,
   },
 };
 
